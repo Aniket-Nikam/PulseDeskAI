@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PulseDesk</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      /* Prevent flash of unstyled content — apply theme before React mounts */
+      (function() {
+        var t = localStorage.getItem('pd-theme');
+        if (t === 'dark') document.documentElement.dataset.theme = 'dark';
+      })();
+    </style>
+    <script type="module" crossorigin src="/assets/index-gd_JEMzg.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DCYJHdYO.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
