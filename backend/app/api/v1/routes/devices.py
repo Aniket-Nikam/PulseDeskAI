@@ -1,19 +1,16 @@
 import uuid
-import secrets
-from datetime import datetime, timezone
-from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
 from app.db.session import get_db
-from app.models import Device, Employee, DeviceStatus
-from app.schemas import DeviceEnrollRequest, DeviceEnrollResponse, DeviceApproval, DeviceOut
-from app.api.v1.routes.auth import get_current_admin
-from app.core.security import generate_device_token
-from app.services.online_tracker import is_device_online
+from app.schemas import DeviceEnrollRequest, DeviceEnrollResponse, DeviceApproval, DeviceOut, PaginatedResponse
+from app.api.v1.routes.auth import require_admin_read, require_admin_write
 from app.core.logging import get_logger
+from app.core.config import settings
+from app.core.rate_limit import enforce_rate_limit
+from app.core.audit import log_admin_action
+from app.services import device_service
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 log = get_logger("devices")
@@ -22,173 +19,92 @@ log = get_logger("devices")
 @router.post("/enroll", response_model=DeviceEnrollResponse, status_code=201)
 async def enroll_device(
     payload: DeviceEnrollRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Called by the agent on first run. No admin auth required —
     device enters 'pending' state until admin approves.
     """
-    result = await db.execute(
-        select(Employee).where(Employee.email == payload.employee_email, Employee.is_active == True)
+    enforce_rate_limit(
+        request,
+        key_prefix="device_enroll",
+        limit=settings.ENROLLMENT_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
     )
-    employee = result.scalar_one_or_none()
-    if not employee:
-        raise HTTPException(status_code=404, detail="Employee not found or not active")
 
-    # Check for existing pending/approved device with same hostname
-    existing = await db.execute(
-        select(Device).where(
-            Device.employee_id == employee.id,
-            Device.hostname == payload.hostname,
-            Device.status.in_([DeviceStatus.approved, DeviceStatus.pending]),
-        )
-    )
-    existing_device = existing.scalar_one_or_none()
-    if existing_device:
-        if existing_device.status == DeviceStatus.approved:
-            return DeviceEnrollResponse(
-                device_id=existing_device.id,
-                device_token=existing_device.device_token,
-                status="approved",
-                message="Device already enrolled and approved",
-            )
-        else:
-            return DeviceEnrollResponse(
-                device_id=existing_device.id,
-                device_token=existing_device.device_token,
-                status="pending",
-                message="Enrollment pending admin approval. Show code to your admin: "
-                        + (existing_device.enrollment_code or ""),
-            )
+    if len(payload.hostname.strip()) > 255:
+        raise HTTPException(status_code=400, detail="hostname is too long")
 
-    device_id = uuid.uuid4()
-    token = generate_device_token(str(device_id), str(employee.id))
-    enrollment_code = secrets.token_hex(3).upper()
+    result = await device_service.enroll_device(payload, db)
 
-    device = Device(
-        id=device_id,
-        employee_id=employee.id,
-        hostname=payload.hostname,
-        platform=payload.platform,
-        os_version=payload.os_version,
-        agent_version=payload.agent_version,
-        device_token=token,
-        enrollment_code=enrollment_code,
-        status=DeviceStatus.pending,
-    )
-    db.add(device)
-    await db.commit()
-    await db.refresh(device)
-
-    log.info("device_enrolled", device_id=str(device.id), employee=payload.employee_email)
+    log.info("device_enrollment_attempt", device_id=result["device_id"], status=result["status"])
     return DeviceEnrollResponse(
-        device_id=device.id,
-        device_token=token,
-        status="pending",
-        message=f"Enrollment pending. Show this code to your admin: {enrollment_code}",
+        device_id=uuid.UUID(result["device_id"]),
+        device_token=result["device_token"],
+        status=result["status"],
+        message=result["message"],
     )
 
 
-@router.get("", response_model=List[DeviceOut])
+@router.get("", response_model=PaginatedResponse[DeviceOut])
 async def list_devices(
-    admin=Depends(get_current_admin),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Device, Employee.full_name.label("employee_name"))
-        .join(Employee, Device.employee_id == Employee.id)
-        .order_by(Device.created_at.desc())
+    items, total = await device_service.list_devices(db, skip=skip, limit=limit)
+    return PaginatedResponse(
+        items=items,
+        total=total,
+        page=(skip // limit) + 1,
+        page_size=limit,
+        pages=(total + limit - 1) // limit,
     )
-    rows = result.all()
-    out = []
-    for device, emp_name in rows:
-        out.append(DeviceOut(
-            id=device.id,
-            employee_id=device.employee_id,
-            employee_name=emp_name,
-            hostname=device.hostname,
-            platform=device.platform,
-            os_version=device.os_version,
-            agent_version=device.agent_version,
-            status=device.status,
-            last_heartbeat=device.last_heartbeat,
-            enrolled_at=device.enrolled_at,
-            created_at=device.created_at,
-            is_online=is_device_online(device),
-        ))
-    return out
 
 
-@router.get("/pending", response_model=List[DeviceOut])
+@router.get("/pending", response_model=PaginatedResponse[DeviceOut])
 async def list_pending_devices(
-    admin=Depends(get_current_admin),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Device, Employee.full_name.label("employee_name"))
-        .join(Employee, Device.employee_id == Employee.id)
-        .where(Device.status == DeviceStatus.pending)
-        .order_by(Device.created_at.desc())
+    items, total = await device_service.list_pending_devices(db, skip=skip, limit=limit)
+    return PaginatedResponse(
+        items=items,
+        total=total,
+        page=(skip // limit) + 1,
+        page_size=limit,
+        pages=(total + limit - 1) // limit,
     )
-    rows = result.all()
-    return [
-        DeviceOut(
-            id=d.id, employee_id=d.employee_id, employee_name=emp,
-            hostname=d.hostname, platform=d.platform, os_version=d.os_version,
-            agent_version=d.agent_version, status=d.status,
-            last_heartbeat=d.last_heartbeat, enrolled_at=d.enrolled_at,
-            created_at=d.created_at, is_online=False,
-        )
-        for d, emp in rows
-    ]
 
 
 @router.patch("/{device_id}/status", response_model=DeviceOut)
 async def update_device_status(
     device_id: uuid.UUID,
     payload: DeviceApproval,
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
-    if payload.status not in ("approved", "revoked", "suspended"):
-        raise HTTPException(status_code=400, detail="Invalid status")
-
-    result = await db.execute(
-        select(Device, Employee.full_name.label("emp_name"))
-        .join(Employee, Device.employee_id == Employee.id)
-        .where(Device.id == device_id)
-    )
-    row = result.one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="Device not found")
-
-    device, emp_name = row
-    device.status = payload.status
-    if payload.status == "approved" and not device.enrolled_at:
-        device.enrolled_at = datetime.now(timezone.utc)
-
-    await db.commit()
-    await db.refresh(device)
+    device_out = await device_service.update_device_status(device_id, payload.status, db)
     log.info("device_status_updated", device_id=str(device_id), status=payload.status, by=str(admin.id))
-
-    return DeviceOut(
-        id=device.id, employee_id=device.employee_id, employee_name=emp_name,
-        hostname=device.hostname, platform=device.platform, os_version=device.os_version,
-        agent_version=device.agent_version, status=device.status,
-        last_heartbeat=device.last_heartbeat, enrolled_at=device.enrolled_at,
-        created_at=device.created_at, is_online=is_device_online(device),
+    log_admin_action(
+        "device_status_updated",
+        admin_id=str(admin.id),
+        device_id=str(device_id),
+        status=payload.status,
     )
+    return device_out
 
 
 @router.delete("/{device_id}", status_code=204)
 async def delete_device(
     device_id: uuid.UUID,
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-    device.status = DeviceStatus.revoked
-    await db.commit()
+    await device_service.delete_device(device_id, db)
+    log_admin_action("device_revoked", admin_id=str(admin.id), device_id=str(device_id))
+

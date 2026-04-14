@@ -1,26 +1,32 @@
 @echo off
-title PulseDesk Monitor
+title PulseDesk Agent
+color 0F
 
 set AGENT=%~dp0
-set PY=
-if exist "%AGENT%python_path.txt" ( set /p PY=<"%AGENT%python_path.txt" )
-if "%PY%"=="" (
-    if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
-        set PY=%LOCALAPPDATA%\Programs\Python\Python311\python.exe
-    ) else ( set PY=py )
+cd /d "%AGENT%"
+
+if not exist "%AGENT%venv\Scripts\python.exe" (
+    echo [ERROR] Virtual environment not found. 
+    echo Please run INSTALL_AGENT.bat first!
+    pause
+    exit /b 1
 )
 
 if not exist "%AGENT%.env" (
     echo [ERROR] .env file missing.
-    echo Download the agent again from the join portal.
-    pause & exit /b 1
+    echo Download the agent package again from the join portal to get the pre-configured .env, or use the join link.
+    pause
+    exit /b 1
 )
 
 echo Starting PulseDesk monitoring agent...
 echo Press Ctrl+C to stop.
+echo ========================================
 echo.
-"%PY%" "%AGENT%agent.py"
+
+"venv\Scripts\python.exe" agent.py
 
 echo.
+echo ========================================
 echo Agent stopped.
 pause

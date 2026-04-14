@@ -7,7 +7,9 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-BASE = "http://localhost:8000/api/v1"
+BASE = os.getenv("PULSEDESK_API_BASE", "http://localhost:8000/api/v1").rstrip("/")
+ADMIN_EMAIL = os.getenv("PULSEDESK_ADMIN_EMAIL", "")
+ADMIN_PASSWORD = os.getenv("PULSEDESK_ADMIN_PASSWORD", "")
 
 
 def api_get(path, token):
@@ -73,7 +75,9 @@ if __name__ == "__main__":
 
     # Login
     print("\n--- Login ---")
-    token = test_login("admin@company.com", "changeme123")
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        raise RuntimeError("Set PULSEDESK_ADMIN_EMAIL and PULSEDESK_ADMIN_PASSWORD before running.")
+    token = test_login(ADMIN_EMAIL, ADMIN_PASSWORD)
     if not token:
         sys.exit(1)
 
@@ -122,7 +126,11 @@ if __name__ == "__main__":
     async def check_db():
         from sqlalchemy.ext.asyncio import create_async_engine
         from sqlalchemy import text
-        engine = create_async_engine("postgresql+asyncpg://postgres:123456@localhost:5432/pulsedesk")
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        if not database_url:
+            print("  [WARN] DATABASE_URL not set; skipping direct DB check")
+            return
+        engine = create_async_engine(database_url)
         async with engine.connect() as conn:
             result = await conn.execute(
                 text("SELECT s.id, s.employee_id, s.file_path, e.full_name FROM screenshots s LEFT JOIN employees e ON s.employee_id = e.id ORDER BY s.captured_at DESC LIMIT 5")

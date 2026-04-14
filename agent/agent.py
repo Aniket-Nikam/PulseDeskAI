@@ -99,6 +99,10 @@ class PulseDeskAgent:
         self._last_violation_reported: dict = {}  # domain -> timestamp, cooldown
 
     def start(self):
+        if not config.server_url:
+            log.error("SERVER_URL is not configured. Use --join URL or set SERVER_URL in .env")
+            sys.exit(1)
+
         print(f"\nPulseDesk Agent v{AGENT_VERSION}")
         print(f"  System   : {platform.system()} {platform.release()}")
         print(f"  Hostname : {socket.gethostname()}")
@@ -107,7 +111,11 @@ class PulseDeskAgent:
         print(f"  Interval : {config.sample_interval}s\n")
 
         if not self.client.is_enrolled:
-            self._ensure_enrolled()
+            try:
+                self._ensure_enrolled()
+            except Exception as e:
+                log.error(f"Failed to enroll after multiple attempts: {e}")
+                sys.exit(1)
         else:
             log.info("Device already enrolled.")
 
@@ -115,8 +123,11 @@ class PulseDeskAgent:
             log.error("Not enrolled. Run: python agent.py --join <URL>")
             sys.exit(1)
 
-        # Update device info immediately
-        self._send_device_info()
+        # Update device info immediately using resilient client
+        self.client.send_heartbeat()
+
+        # Force an immediate blocklist sync at startup — don't wait 5 min
+        self.client.force_sync_blocklist()
 
         input_monitor.start()
         self.client.start_session()
@@ -126,60 +137,59 @@ class PulseDeskAgent:
 
         self._running = True
         log.info("Monitoring active. Press Ctrl+C to stop.")
-        self._run_loop()
-
-    def _send_device_info(self):
-        """Send hostname, platform, OS version to server — fixes 'pending/unknown' in dashboard."""
+        
         try:
-            requests.patch(
-                f"{config.server_url}/api/v1/agent/device-info",
-                json={
-                    "device_token": self.client.device_token,
-                    "hostname": socket.gethostname(),
-                    "platform": platform.system().lower(),
-                    "os_version": platform.version()[:100],
-                    "agent_version": AGENT_VERSION,
-                },
-                timeout=10,
-            )
-            log.info(f"device_info_sent: {socket.gethostname()} ({platform.system().lower()})")
+            self._run_loop()
+        except KeyboardInterrupt:
+            self._handle_signal(signal.SIGINT, None)
         except Exception as e:
-            log.debug(f"device_info_failed: {e}")
+            log.critical(f"Agent crashed unexpectedly: {e}", exc_info=True)
+            self._handle_signal(signal.SIGTERM, None)
 
+    from tenacity import retry, stop_after_attempt, wait_exponential
+    
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, max=10), reraise=True)
     def _ensure_enrolled(self):
         if not config.employee_email:
             log.error("No EMPLOYEE_EMAIL set. Use --join URL or set in .env")
             return
+        
+        log.info("Attempting device enrollment...")
         try:
             result = self.client.enroll(
                 hostname=socket.gethostname(),
                 platform=platform.system().lower(),
                 os_version=platform.version(),
             )
-            log.info(f"Enrollment: {result.get('status')} — {result.get('message', '')}")
+            log.info(f"Enrollment successful: {result.get('status')} — {result.get('message', '')}")
         except Exception as e:
-            log.error(f"Enrollment failed: {e}")
+            log.error(f"Enrollment retry failed: {e}")
+            raise e
 
     def _run_loop(self):
         while self._running:
             loop_start = time.monotonic()
-            self._take_sample()
+            
+            try:
+                self._take_sample()
 
-            if (loop_start - self._last_batch_send) >= config.batch_interval:
-                self._send_batch()
-                self._last_batch_send = loop_start
+                if (loop_start - self._last_batch_send) >= config.batch_interval:
+                    self._send_batch()
+                    self._last_batch_send = loop_start
 
-            if (loop_start - self._last_heartbeat) >= config.heartbeat_interval:
-                self._do_heartbeat()
-                self._last_heartbeat = loop_start
+                if (loop_start - self._last_heartbeat) >= config.heartbeat_interval:
+                    self._do_heartbeat()
+                    self._last_heartbeat = loop_start
 
-            if (loop_start - self._last_screenshot_check) >= 60:
-                self._maybe_take_screenshot()
-                self._last_screenshot_check = loop_start
+                if (loop_start - self._last_screenshot_check) >= 60:
+                    self._maybe_take_screenshot()
+                    self._last_screenshot_check = loop_start
 
-            if (loop_start - self._last_blocklist_sync) >= 300:  # every 5 min
-                self._sync_blocklist()
-                self._last_blocklist_sync = loop_start
+                if (loop_start - self._last_blocklist_sync) >= 300:  # every 5 min
+                    self._sync_blocklist()
+                    self._last_blocklist_sync = loop_start
+            except Exception as e:
+                log.error(f"Error within main agent loop: {e}", exc_info=True)
 
             elapsed = time.monotonic() - loop_start
             time.sleep(max(0, config.sample_interval - elapsed))
@@ -216,68 +226,35 @@ class PulseDeskAgent:
             self._check_blocklist(app_name, window_title)
 
     def _check_blocklist(self, app_name: Optional[str], window_title: Optional[str]):
-        """Detect and report blocked domain access."""
-        if not self._blocklist:
+        """Detect and report blocked domain access utilizing synced blocklist from client."""
+        domains = self.client.check_window_against_blocklist(app_name, window_title)
+        if not domains:
             return
-        text = f"{(app_name or '').lower()} {(window_title or '').lower()}"
-        for domain in self._blocklist:
-            if domain.lower() in text:
-                # Rate limit: report same domain max once per 5 min
-                now = time.monotonic()
-                last = self._last_violation_reported.get(domain, 0)
-                if now - last < 300:
-                    return
-                self._last_violation_reported[domain] = now
-                log.warning(f"BLOCKED DOMAIN DETECTED: {domain}")
-                try:
-                    requests.post(
-                        f"{config.server_url}/api/v1/blocker/violation",
-                        json={
-                            "device_token": self.client.device_token,
-                            "domain": domain,
-                            "window_title": window_title or "",
-                            "app_name": app_name or "",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        },
-                        timeout=5,
-                    )
-                except Exception:
-                    pass
-                break
+            
+        now = time.monotonic()
+        any_screenshot = False
+        
+        for domain in domains:
+            # Rate limit: report same domain max once per 5 min locally before pinging server
+            last = self._last_violation_reported.get(domain, 0)
+            if now - last < 300:
+                continue
+                
+            self._last_violation_reported[domain] = now
+            screenshot_requested = self.client.report_violation(domain, window_title, app_name)
+            if screenshot_requested:
+                log.warning(f"Violation screenshot triggered for domain: {domain}")
+                any_screenshot = True
+                
+        if any_screenshot:
+            self._take_and_upload_screenshot(trigger="violation")
 
     def _sync_blocklist(self):
-        """Fetch active blocklist from server."""
-        try:
-            resp = requests.get(
-                f"{config.server_url}/api/v1/blocker/domains/active-list",
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                self._blocklist = resp.json().get("domains", [])
-                if self._blocklist:
-                    log.debug(f"blocklist_synced: {len(self._blocklist)} domains")
-        except Exception:
-            pass
+        """Fetch active blocklist from server using underlying client session."""
+        self.client.sync_blocklist()
 
     def _do_heartbeat(self):
-        """Send heartbeat and include device info for updates."""
-        if not self.client.device_token:
-            return
-        try:
-            requests.post(
-                f"{config.server_url}/api/v1/agent/heartbeat",
-                json={
-                    "device_token": self.client.device_token,
-                    "hostname": socket.gethostname(),
-                    "platform": platform.system().lower(),
-                    "os_version": platform.version()[:100],
-                    "agent_version": AGENT_VERSION,
-                },
-                timeout=10,
-            )
-        except Exception:
-            pass
-        # Also use client method for queue flush
+        """Send heartbeat to maintain backend online status."""
         self.client.send_heartbeat()
 
     def _send_batch(self):
@@ -290,20 +267,10 @@ class PulseDeskAgent:
 
     def _maybe_take_screenshot(self):
         """Check if screenshot required by policy, then take one."""
-        if not self.client.device_token:
-            return
-        try:
-            resp = requests.get(
-                f"{config.server_url}/api/v1/agent/screenshot-required",
-                params={"device_token": self.client.device_token},
-                timeout=5,
-            )
-            if resp.status_code == 200 and resp.json().get("required"):
-                self._take_and_upload_screenshot()
-        except Exception:
-            pass
+        if self.client.check_screenshot_required():
+            self._take_and_upload_screenshot(trigger="interval")
 
-    def _take_and_upload_screenshot(self):
+    def _take_and_upload_screenshot(self, trigger: str = "interval"):
         """Capture and upload screenshot."""
         data = None
         mime = "image/jpeg"
@@ -339,23 +306,7 @@ class PulseDeskAgent:
         if not data:
             return
 
-        try:
-            resp = requests.post(
-                f"{config.server_url}/api/v1/agent/screenshot",
-                data={
-                    "device_token": self.client.device_token,
-                    "captured_at": datetime.now(timezone.utc).isoformat(),
-                    "trigger": "interval",
-                },
-                files={"file": ("screenshot.jpg", data, mime)},
-                timeout=30,
-            )
-            if resp.status_code == 201:
-                log.info("screenshot_uploaded")
-            else:
-                log.debug(f"screenshot_upload_status: {resp.status_code}")
-        except Exception as e:
-            log.debug(f"screenshot_upload_failed: {e}")
+        self.client.upload_screenshot(data, mime, trigger=trigger)
 
     def _handle_signal(self, signum, frame):
         log.info("Shutting down gracefully...")

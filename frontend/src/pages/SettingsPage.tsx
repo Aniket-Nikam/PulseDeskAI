@@ -154,8 +154,9 @@ function SecurityTab() {
 }
 
 function SystemTab() {
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
   const checks = [
-    { label: "Backend API", status: "online", detail: "http://localhost:8000" },
+    { label: "Backend API", status: "online", detail: `${baseUrl || "(configured)"}` },
     { label: "WebSocket", status: "online", detail: "Real-time updates active" },
     { label: "Database", status: "online", detail: "PostgreSQL connected" },
     { label: "Screenshot dir", status: "ok", detail: "./screenshots" },
@@ -182,9 +183,9 @@ function SystemTab() {
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Quick links</h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {[
-            { label: "API documentation", url: "http://localhost:8000/api/docs" },
-            { label: "Employee join portal", url: "http://localhost:8000/join" },
-            { label: "OpenAPI schema", url: "http://localhost:8000/api/openapi.json" },
+            { label: "API documentation", url: `${baseUrl}/api/docs` },
+            { label: "Employee join portal", url: `${baseUrl}/join` },
+            { label: "OpenAPI schema", url: `${baseUrl}/api/openapi.json` },
           ].map(({ label, url }) => (
             <a key={url} href={url} target="_blank" rel="noopener noreferrer"
               style={{

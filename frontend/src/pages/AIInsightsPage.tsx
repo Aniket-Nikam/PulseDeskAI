@@ -1,17 +1,16 @@
 /**
  * PulseDesk AI Insights Page
- * Four features: Chat Analyst, Burnout Risk Engine, Activity Patterns, Work Recommendations
+ * Three features: Chat Analyst, Team Pulse Summary, Work Recommendations
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
-  Bot, Send, Zap, AlertTriangle, RefreshCw,
-  Sparkles, TrendingDown, Clock, Shield,
-  ChevronDown, ChevronUp, Brain, User, Flame, TrendingUp,
-  AlertCircle,
+  Bot, Send, Zap, RefreshCw,
+  Sparkles, Shield,
+  Brain, User, TrendingUp,
+  AlertCircle, BarChart3, Award, Target, ArrowUpRight, ArrowDownRight, Minus,
 } from "lucide-react";
 import { api } from "../api/client";
-import type { Employee } from "../types";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +19,12 @@ interface ChatMessage {
   content: string;
 }
 
-// Removed Burnout and Activity types
+interface Employee {
+  id: string;
+  full_name: string;
+  email: string;
+  department_id: string | null;
+}
 
 interface WorkRecommendationData {
   employee_id: string;
@@ -29,6 +33,27 @@ interface WorkRecommendationData {
   recommendation: string;
   priority: string;
   rationale: string[];
+}
+
+interface TeamPulseEmployee {
+  name: string;
+  department: string;
+  avg_score: number;
+  avg_active_hours: number;
+  anomalies: number;
+  trend: "up" | "down" | "stable";
+}
+
+interface TeamPulseData {
+  total_employees: number;
+  avg_team_score: number;
+  team_trend: "up" | "down" | "stable";
+  total_anomalies: number;
+  avg_active_hours: number;
+  top_performers: TeamPulseEmployee[];
+  needs_attention: TeamPulseEmployee[];
+  ai_summary: string;
+  generated_at: string;
 }
 
 // ── Quick prompts ─────────────────────────────────────────────────────────────
@@ -44,20 +69,6 @@ const QUICK_PROMPTS = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function riskColor(level: string) {
-  if (level === "critical") return "var(--danger)";
-  if (level === "high")     return "#f97316";
-  if (level === "medium")   return "var(--warning)";
-  return "var(--success)";
-}
-
-function riskBg(level: string) {
-  if (level === "critical") return "rgba(239,68,68,0.10)";
-  if (level === "high")     return "rgba(249,115,22,0.10)";
-  if (level === "medium")   return "rgba(245,158,11,0.10)";
-  return "rgba(34,197,94,0.10)";
-}
-
 function categoryIcon(cat: string) {
   const map: Record<string, string> = {
     software_development: "💻", data_analysis: "📊", design: "🎨",
@@ -68,11 +79,28 @@ function categoryIcon(cat: string) {
   return map[cat] ?? "📋";
 }
 
-function productivityColor(level: string) {
-  if (level === "focused")    return "var(--success)";
-  if (level === "distracted") return "var(--danger)";
-  if (level === "idle")       return "var(--text-tertiary)";
-  return "var(--warning)";
+function scoreColor(score: number): string {
+  if (score >= 75) return "var(--success)";
+  if (score >= 50) return "var(--warning)";
+  return "var(--danger)";
+}
+
+function scoreBg(score: number): string {
+  if (score >= 75) return "rgba(34,197,94,0.10)";
+  if (score >= 50) return "rgba(245,158,11,0.10)";
+  return "rgba(239,68,68,0.10)";
+}
+
+function trendIcon(trend: "up" | "down" | "stable") {
+  if (trend === "up") return <ArrowUpRight size={14} color="var(--success)" />;
+  if (trend === "down") return <ArrowDownRight size={14} color="var(--danger)" />;
+  return <Minus size={14} color="var(--text-tertiary)" />;
+}
+
+function trendLabel(trend: "up" | "down" | "stable") {
+  if (trend === "up") return "Improving";
+  if (trend === "down") return "Declining";
+  return "Stable";
 }
 
 // Simple markdown→HTML for bold/bullets
@@ -102,7 +130,7 @@ function renderMarkdown(text: string) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-type Tab = "chat" | "recommendations";
+type Tab = "chat" | "pulse" | "recommendations";
 
 export function AIInsightsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("chat");
@@ -137,6 +165,7 @@ export function AIInsightsPage() {
       }}>
         {([
           { id: "chat" as Tab, icon: Bot, label: "AI Chat Analyst" },
+          { id: "pulse" as Tab, icon: BarChart3, label: "Team Pulse Summary" },
           { id: "recommendations" as Tab, icon: Zap, label: "Work Recommendations" },
         ] as const).map(({ id, icon: Icon, label }) => (
           <button key={id} onClick={() => setActiveTab(id)} style={{
@@ -156,6 +185,7 @@ export function AIInsightsPage() {
 
       {/* Tab Panels */}
       {activeTab === "chat"            && <ChatPanel />}
+      {activeTab === "pulse"           && <TeamPulsePanel />}
       {activeTab === "recommendations" && <WorkRecommendationsPanel />}
     </div>
   );
@@ -344,6 +374,419 @@ function ChatPanel() {
   );
 }
 
+// ── Team Pulse Summary Panel ──────────────────────────────────────────────────
+
+function TeamPulsePanel() {
+  const [data, setData] = useState<TeamPulseData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchPulse = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Use the chat endpoint with a structured query to get team pulse
+      const { data: res } = await api.post("/ai/chat", {
+        message: "Give me a brief executive team health summary in 2-3 sentences. Include overall productivity assessment, any concerns, and one key recommendation.",
+        history: [],
+      });
+
+      // Also fetch employee data for metrics
+      const { data: employees } = await api.get("/employees");
+      const employeeList = Array.isArray(employees) ? employees : [];
+
+      // Fetch diagnostics for real metrics
+      let diagnostics: any = null;
+      try {
+        const { data: diag } = await api.get("/ai/diagnostics/data-status");
+        diagnostics = diag;
+      } catch {
+        // diagnostics endpoint may not be available
+      }
+
+      // Build team pulse from multiple data sources
+      const topPerformers: TeamPulseEmployee[] = [];
+      const needsAttention: TeamPulseEmployee[] = [];
+
+      // Try to get individual scores via work-recommendations for each employee
+      const employeeMetrics: { name: string; score: number; hours: number; anomalies: number }[] = [];
+
+      for (const emp of employeeList.slice(0, 10)) {
+        try {
+          const { data: report } = await api.get(`/ai/work-recommendations/${emp.id}`);
+          if (report?.metrics) {
+            employeeMetrics.push({
+              name: emp.full_name,
+              score: report.metrics.productivity_score || 0,
+              hours: report.metrics.avg_active_hours || 0,
+              anomalies: report.metrics.anomalies || 0,
+            });
+          }
+        } catch {
+          // skip
+        }
+      }
+
+      // Sort and categorize
+      employeeMetrics.sort((a, b) => b.score - a.score);
+
+      for (const m of employeeMetrics.slice(0, 3)) {
+        topPerformers.push({
+          name: m.name,
+          department: "Team",
+          avg_score: m.score,
+          avg_active_hours: m.hours,
+          anomalies: m.anomalies,
+          trend: m.score >= 70 ? "up" : m.score >= 50 ? "stable" : "down",
+        });
+      }
+
+      for (const m of employeeMetrics.filter(m => m.score < 60).slice(0, 3)) {
+        needsAttention.push({
+          name: m.name,
+          department: "Team",
+          avg_score: m.score,
+          avg_active_hours: m.hours,
+          anomalies: m.anomalies,
+          trend: m.score < 40 ? "down" : "stable",
+        });
+      }
+
+      const avgScore = employeeMetrics.length > 0
+        ? employeeMetrics.reduce((s, m) => s + m.score, 0) / employeeMetrics.length
+        : 0;
+      const avgHours = employeeMetrics.length > 0
+        ? employeeMetrics.reduce((s, m) => s + m.hours, 0) / employeeMetrics.length
+        : 0;
+      const totalAnomalies = employeeMetrics.reduce((s, m) => s + m.anomalies, 0);
+
+      setData({
+        total_employees: employeeList.length,
+        avg_team_score: Math.round(avgScore * 10) / 10,
+        team_trend: avgScore >= 65 ? "up" : avgScore >= 45 ? "stable" : "down",
+        total_anomalies: totalAnomalies,
+        avg_active_hours: Math.round(avgHours * 10) / 10,
+        top_performers: topPerformers,
+        needs_attention: needsAttention,
+        ai_summary: res.reply,
+        generated_at: new Date().toLocaleString(),
+      });
+    } catch (err: any) {
+      console.error("Team pulse error:", err);
+      setError("Failed to generate team pulse. Ensure the backend and AI service are running.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchPulse(); }, [fetchPulse]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
+      {/* Header card */}
+      <div style={{
+        background: "linear-gradient(135deg, rgba(59,130,246,0.08), rgba(139,92,246,0.08))",
+        border: "1px solid rgba(59,130,246,0.15)", borderRadius: "var(--radius-xl)",
+        padding: "var(--space-5)", display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 12, background: "rgba(59,130,246,0.12)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <BarChart3 size={22} color="var(--accent)" />
+          </div>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16, color: "var(--text-primary)" }}>
+              Team Pulse Summary
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text-tertiary)" }}>
+              Real-time AI-generated team health overview · Last 7 days
+            </div>
+          </div>
+        </div>
+        <button onClick={fetchPulse} disabled={loading} style={{
+          display: "flex", alignItems: "center", gap: 7, padding: "8px 14px",
+          borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)",
+          background: "var(--bg-primary)", color: "var(--text-secondary)",
+          fontSize: 13, fontWeight: 500, cursor: "pointer", opacity: loading ? 0.6 : 1,
+        }}>
+          <RefreshCw size={14} style={{ animation: loading ? "spin 1s linear infinite" : "none" }} />
+          Refresh
+        </button>
+      </div>
+
+      {/* Loading state */}
+      {loading && (
+        <div style={{
+          display: "flex", flexDirection: "column", alignItems: "center",
+          justifyContent: "center", padding: "var(--space-12)", gap: 16,
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: "50%",
+            border: "3px solid var(--border-default)",
+            borderTopColor: "var(--accent)",
+            animation: "spin 1s linear infinite",
+          }} />
+          <div style={{ fontSize: 13.5, color: "var(--text-tertiary)" }}>
+            Generating team pulse summary...
+          </div>
+        </div>
+      )}
+
+      {/* Error state */}
+      {error && (
+        <div style={{
+          padding: "var(--space-4)", background: "var(--danger-subtle)",
+          border: "1px solid rgba(220,38,38,0.2)", borderRadius: "var(--radius-lg)",
+          fontSize: 13.5, color: "var(--danger)", display: "flex", gap: 8, alignItems: "flex-start",
+        }}>
+          <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+          <div>{error}</div>
+        </div>
+      )}
+
+      {/* Data display */}
+      {data && !loading && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          {/* Metric Cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-3)" }}>
+            {/* Team Score */}
+            <div style={{
+              background: "var(--bg-primary)", border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-lg)", padding: "var(--space-4)",
+              borderTop: `3px solid ${scoreColor(data.avg_team_score)}`,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase" }}>
+                  Team Score
+                </div>
+                {trendIcon(data.team_trend)}
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: scoreColor(data.avg_team_score), lineHeight: 1 }}>
+                {data.avg_team_score}%
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                {trendLabel(data.team_trend)} trend
+              </div>
+            </div>
+
+            {/* Employees */}
+            <div style={{
+              background: "var(--bg-primary)", border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-lg)", padding: "var(--space-4)",
+              borderTop: "3px solid var(--accent)",
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: 8 }}>
+                Active Employees
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "var(--accent)", lineHeight: 1 }}>
+                {data.total_employees}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                Currently tracked
+              </div>
+            </div>
+
+            {/* Avg Active Hours */}
+            <div style={{
+              background: "var(--bg-primary)", border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-lg)", padding: "var(--space-4)",
+              borderTop: "3px solid #8b5cf6",
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: 8 }}>
+                Avg Daily Hours
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#8b5cf6", lineHeight: 1 }}>
+                {data.avg_active_hours}h
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                Per employee
+              </div>
+            </div>
+
+            {/* Anomalies */}
+            <div style={{
+              background: "var(--bg-primary)", border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-lg)", padding: "var(--space-4)",
+              borderTop: "3px solid #f97316",
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: 8 }}>
+                Total Anomalies
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#f97316", lineHeight: 1 }}>
+                {data.total_anomalies}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 4 }}>
+                Last 7 days
+              </div>
+            </div>
+          </div>
+
+          {/* AI Summary */}
+          <div style={{
+            background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(59,130,246,0.06))",
+            border: "1px solid rgba(99,102,241,0.15)", borderRadius: "var(--radius-lg)",
+            padding: "var(--space-5)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8,
+                background: "linear-gradient(135deg, #6366f1, #3b82f6)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <Sparkles size={14} color="white" />
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                AI Analysis
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginLeft: "auto" }}>
+                {data.generated_at}
+              </div>
+            </div>
+            <div style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+              {renderMarkdown(data.ai_summary)}
+            </div>
+          </div>
+
+          {/* Two-column layout: Top Performers + Needs Attention */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-4)" }}>
+            {/* Top Performers */}
+            <div style={{
+              background: "var(--bg-primary)", border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-lg)", overflow: "hidden",
+            }}>
+              <div style={{
+                padding: "var(--space-4) var(--space-5)",
+                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                <Award size={16} color="var(--success)" />
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  Top Performers
+                </span>
+              </div>
+              <div style={{ padding: "var(--space-2)" }}>
+                {data.top_performers.length === 0 ? (
+                  <div style={{ padding: "var(--space-4)", textAlign: "center", fontSize: 13, color: "var(--text-tertiary)" }}>
+                    No performance data yet
+                  </div>
+                ) : (
+                  data.top_performers.map((emp, i) => (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", gap: 12,
+                      padding: "10px var(--space-3)", borderRadius: "var(--radius-md)",
+                      background: i === 0 ? "rgba(34,197,94,0.06)" : "transparent",
+                    }}>
+                      {/* Rank */}
+                      <div style={{
+                        width: 28, height: 28, borderRadius: "50%",
+                        background: i === 0 ? "var(--success)" : "var(--bg-tertiary)",
+                        color: i === 0 ? "white" : "var(--text-secondary)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 12, fontWeight: 700, flexShrink: 0,
+                      }}>
+                        {i + 1}
+                      </div>
+                      {/* Info */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {emp.name}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                          {emp.avg_active_hours}h/day · {emp.anomalies} anomalies
+                        </div>
+                      </div>
+                      {/* Score */}
+                      <div style={{
+                        fontSize: 14, fontWeight: 700, color: scoreColor(emp.avg_score),
+                        background: scoreBg(emp.avg_score),
+                        padding: "3px 10px", borderRadius: "var(--radius-full)",
+                      }}>
+                        {emp.avg_score}%
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Needs Attention */}
+            <div style={{
+              background: "var(--bg-primary)", border: "1px solid var(--border-default)",
+              borderRadius: "var(--radius-lg)", overflow: "hidden",
+            }}>
+              <div style={{
+                padding: "var(--space-4) var(--space-5)",
+                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                <Target size={16} color="#f97316" />
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  Needs Attention
+                </span>
+              </div>
+              <div style={{ padding: "var(--space-2)" }}>
+                {data.needs_attention.length === 0 ? (
+                  <div style={{
+                    padding: "var(--space-4)", textAlign: "center", fontSize: 13, color: "var(--text-tertiary)",
+                    display: "flex", flexDirection: "column", alignItems: "center", gap: 8,
+                  }}>
+                    <Shield size={20} color="var(--success)" />
+                    <span>All employees are performing well!</span>
+                  </div>
+                ) : (
+                  data.needs_attention.map((emp, i) => (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", gap: 12,
+                      padding: "10px var(--space-3)", borderRadius: "var(--radius-md)",
+                      background: i === 0 ? "rgba(249,115,22,0.06)" : "transparent",
+                    }}>
+                      {/* Warning icon */}
+                      <div style={{
+                        width: 28, height: 28, borderRadius: "50%",
+                        background: "rgba(249,115,22,0.12)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        flexShrink: 0,
+                      }}>
+                        <AlertCircle size={14} color="#f97316" />
+                      </div>
+                      {/* Info */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {emp.name}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                          {emp.avg_active_hours}h/day · {emp.anomalies} anomalies
+                        </div>
+                      </div>
+                      {/* Score */}
+                      <div style={{
+                        fontSize: 14, fontWeight: 700, color: scoreColor(emp.avg_score),
+                        background: scoreBg(emp.avg_score),
+                        padding: "3px 10px", borderRadius: "var(--radius-full)",
+                      }}>
+                        {emp.avg_score}%
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 // ── Work Recommendations Panel ──────────────────────────────────────────────────
 
 function WorkRecommendationsPanel() {
@@ -422,7 +865,7 @@ function WorkRecommendationsPanel() {
           report_id: `weekly-${new Date().toISOString().split('T')[0]}`,
         });
         
-        const itemId = response?.data?.id || (response as any)?.id;
+        const itemId = response?.data?.id;
         console.log("Action item created with ID:", itemId, "Response:", response);
         
         if (itemId) {
@@ -515,7 +958,7 @@ function WorkRecommendationsPanel() {
             animation: "spin 1s linear infinite",
           }} />
           <div style={{ fontSize: 13.5, color: "var(--text-tertiary)" }}>
-            AI is analyzing performance and generating personalized insights…
+            AI is analyzing performance and generating personalized insights...
           </div>
         </div>
       )}
@@ -583,7 +1026,7 @@ function WorkRecommendationsPanel() {
           {report.highlights && report.highlights.length > 0 && (
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--success)", textTransform: "uppercase", marginBottom: "10px" }}>
-                ✨ Highlights & Achievements
+                Highlights & Achievements
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
                 {report.highlights.map((h: string, i: number) => (
@@ -592,7 +1035,7 @@ function WorkRecommendationsPanel() {
                     borderRadius: "var(--radius-md)", padding: "var(--space-3) var(--space-4)",
                     fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5,
                   }}>
-                    <span style={{ color: "var(--success)", fontWeight: 600 }}>✓</span> {h}
+                    <span style={{ color: "var(--success)", fontWeight: 600 }}>+</span> {h}
                   </div>
                 ))}
               </div>
@@ -603,7 +1046,7 @@ function WorkRecommendationsPanel() {
           {report.focus_areas && report.focus_areas.length > 0 && (
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--warning)", textTransform: "uppercase", marginBottom: "10px" }}>
-                📌 Focus Areas for Improvement
+                Focus Areas for Improvement
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
                 {report.focus_areas.map((f: string, i: number) => (
@@ -612,7 +1055,7 @@ function WorkRecommendationsPanel() {
                     borderRadius: "var(--radius-md)", padding: "var(--space-3) var(--space-4)",
                     fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.5,
                   }}>
-                    <span style={{ color: "var(--warning)", fontWeight: 600 }}>→</span> {f}
+                    <span style={{ color: "var(--warning)", fontWeight: 600 }}>-&gt;</span> {f}
                   </div>
                 ))}
               </div>
@@ -623,7 +1066,7 @@ function WorkRecommendationsPanel() {
           {report.coaching_tips && report.coaching_tips.length > 0 && (
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#a855f7", textTransform: "uppercase", marginBottom: "10px" }}>
-                💡 Coaching Tips for Next Week
+                Coaching Tips for Next Week
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
                 {report.coaching_tips.map((tip: string, i: number) => (
@@ -643,7 +1086,7 @@ function WorkRecommendationsPanel() {
           {report.action_items && report.action_items.length > 0 && (
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#ef4444", textTransform: "uppercase", marginBottom: "10px" }}>
-                ✓ Action Items (Saved to Backend)
+                Action Items (Saved to Backend)
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
                 {report.action_items.map((item: string, i: number) => (
@@ -675,7 +1118,7 @@ function WorkRecommendationsPanel() {
               padding: "var(--space-4)", textAlign: "center",
               fontStyle: "italic", color: "var(--text-secondary)", fontSize: 14, lineHeight: 1.6,
             }}>
-              💪 {report.motivational_message}
+              {report.motivational_message}
             </div>
           )}
 
@@ -683,7 +1126,7 @@ function WorkRecommendationsPanel() {
           {report.metrics && (
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: "10px" }}>
-                📊 Key Metrics
+                Key Metrics
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-3)" }}>
                 <div style={{

@@ -8,67 +8,99 @@ Serves a web page at /join where employees can:
 This completely removes the need for employees to edit any config files.
 """
 
+import re
 import uuid
-import os
 import zipfile
 import io
-import secrets
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db
 from app.models import Employee, Device, DeviceStatus
-from app.core.security import generate_device_token
-from app.api.v1.routes.auth import get_current_admin
+from app.core.security import generate_device_token, generate_enrollment_code, generate_one_time_token
+from app.api.v1.routes.auth import require_admin_write
 from app.core.logging import get_logger
+from app.core.config import settings
+from app.core.files import sanitize_filename_component
+from app.core.rate_limit import enforce_rate_limit
+from app.core.audit import log_admin_action
+from app.services.token_store import token_store
 
 router = APIRouter(tags=["join-portal"])
 log = get_logger("join_portal")
 
-# In-memory token store {token: {employee_id, email, name, server_url, expires_at}}
-_join_tokens: dict = {}
+JOIN_CODE_KIND = "join_portal_code"
+JOIN_DOWNLOAD_KIND = "join_portal_download"
+JOIN_CODE_RE = re.compile(r"^[A-Z0-9]{6}$")
+
+
+def _normalize_server_url(server_url: str) -> str:
+    candidate = (server_url or "").strip().rstrip("/")
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="server_url must be a valid absolute http(s) URL")
+    return candidate
 
 
 # ─── Admin: generate join code ───────────────────────────────────────────────
 
-@router.post("/enroll/generate-link")
+@router.post("/api/v1/enroll/generate-join-link")
 async def generate_join_link(
+    request: Request,
     employee_id: uuid.UUID,
-    server_url: str = "http://localhost:8000",
-    admin=Depends(get_current_admin),
+    server_url: str | None = None,
+    admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
+    enforce_rate_limit(
+        request,
+        key_prefix="join_code_generate",
+        limit=settings.ENROLLMENT_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        include_auth_fingerprint=True,
+    )
+
     result = await db.execute(
-        select(Employee).where(Employee.id == employee_id, Employee.is_active == True)
+        select(Employee).where(Employee.id == employee_id, Employee.is_active)
     )
     employee = result.scalar_one_or_none()
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    # Short human-readable code like "K7X2P9"
-    code = secrets.token_hex(3).upper()
-    _join_tokens[code] = {
-        "employee_id": str(employee_id),
-        "employee_email": employee.email,
-        "employee_name": employee.full_name,
-        "server_url": server_url.rstrip("/"),
-        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=48)).isoformat(),
-    }
+    code = generate_enrollment_code()
+    resolved_server_url = _normalize_server_url(server_url or str(request.base_url))
+    token_store.issue(
+        kind=JOIN_CODE_KIND,
+        token=code,
+        payload={
+            "employee_id": str(employee_id),
+            "employee_email": employee.email,
+            "employee_name": employee.full_name,
+            "server_url": resolved_server_url,
+        },
+        ttl_seconds=settings.JOIN_CODE_TTL_HOURS * 3600,
+    )
 
-    join_url = f"{server_url.rstrip('/')}/join"
-    log.info("join_code_generated", employee=employee.email, code=code)
+    join_url = f"{resolved_server_url}/join"
+    log.info("join_code_generated", employee=employee.email, code_hint=code[:3])
+    log_admin_action(
+        "join_code_generated",
+        admin_id=str(admin.id),
+        employee_id=str(employee_id),
+    )
 
     return {
         "code": code,
         "join_url": join_url,
         "employee_name": employee.full_name,
         "employee_email": employee.email,
-        "expires_in_hours": 48,
+        "expires_in_hours": settings.JOIN_CODE_TTL_HOURS,
         "instructions": f"Tell {employee.full_name} to visit {join_url} and enter code: {code}",
     }
 
@@ -84,64 +116,105 @@ async def join_portal_page():
 @router.post("/join/verify")
 async def verify_join_code(request: Request, db: AsyncSession = Depends(get_db)):
     """Employee submits their join code. Returns download info."""
+    enforce_rate_limit(
+        request,
+        key_prefix="join_verify",
+        limit=settings.JOIN_VERIFY_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+    )
+
     body = await request.json()
     code = body.get("code", "").upper().strip()
 
-    if code not in _join_tokens:
+    if not JOIN_CODE_RE.match(code):
+        raise HTTPException(status_code=400, detail="Join code format is invalid.")
+
+    rec = token_store.get(kind=JOIN_CODE_KIND, token=code)
+    if not rec:
+        used = token_store.get(kind=JOIN_CODE_KIND, token=code, allow_consumed=True)
+        if used and used.is_consumed:
+            raise HTTPException(status_code=410, detail="Join code already used. Ask your admin for a new code.")
         raise HTTPException(status_code=404, detail="Invalid or expired join code. Ask your admin for a new one.")
 
-    info = _join_tokens[code]
-    expires = datetime.fromisoformat(info["expires_at"])
-    if datetime.now(timezone.utc) > expires:
-        del _join_tokens[code]
-        raise HTTPException(status_code=410, detail="Join code expired. Ask your admin for a new one.")
+    payload = rec.payload
+    device_id = payload.get("device_id")
+    device_token = payload.get("device_token")
 
-    # Pre-create and approve the device
-    employee_id = uuid.UUID(info["employee_id"])
-    device_id = uuid.uuid4()
-    device_token = generate_device_token(str(device_id), str(employee_id))
+    if not device_id or not device_token:
+        employee_id = uuid.UUID(payload["employee_id"])
+        generated_device_id = uuid.uuid4()
+        generated_device_token = generate_device_token(str(generated_device_id), str(employee_id))
 
-    device = Device(
-        id=device_id,
-        employee_id=employee_id,
-        hostname="pending",
-        platform="unknown",
-        device_token=device_token,
-        status=DeviceStatus.approved,
-        enrolled_at=datetime.now(timezone.utc),
+        device = Device(
+            id=generated_device_id,
+            employee_id=employee_id,
+            hostname="pending",
+            platform="unknown",
+            device_token=generated_device_token,
+            status=DeviceStatus.approved,
+            enrolled_at=datetime.now(timezone.utc),
+        )
+        db.add(device)
+        await db.commit()
+
+        device_id = str(generated_device_id)
+        device_token = generated_device_token
+        token_store.update_payload(
+            kind=JOIN_CODE_KIND,
+            token=code,
+            updates={"device_id": device_id, "device_token": device_token},
+        )
+
+    download_token = generate_one_time_token(20)
+    token_store.issue(
+        kind=JOIN_DOWNLOAD_KIND,
+        token=download_token,
+        payload={"join_code": code},
+        ttl_seconds=settings.JOIN_DOWNLOAD_TOKEN_TTL_MINUTES * 60,
     )
-    db.add(device)
-    await db.commit()
 
-    # Keep token for download (don't delete yet — employee needs to download)
-    _join_tokens[code]["device_token"] = device_token
-    _join_tokens[code]["device_id"] = str(device_id)
-
-    log.info("join_code_verified", employee=info["employee_email"], device_id=str(device_id))
+    log.info("join_code_verified", employee=payload["employee_email"], device_id=device_id)
 
     return {
-        "employee_name": info["employee_name"],
-        "employee_email": info["employee_email"],
-        "server_url": info["server_url"],
-        "device_token": device_token,
+        "employee_name": payload["employee_name"],
+        "employee_email": payload["employee_email"],
+        "server_url": payload["server_url"],
         "device_id": str(device_id),
-        "download_url": f"/join/download/{code}",
+        "download_url": f"/join/download/{download_token}",
     }
 
 
-@router.get("/join/download/{code}")
-async def download_agent(code: str):
+@router.get("/join/download/{download_token}")
+async def download_agent(download_token: str, request: Request):
     """
     Downloads a ZIP containing the agent pre-configured for this employee.
     Employee just extracts and runs start.bat (Windows) or start.sh (Mac/Linux).
     """
-    code = code.upper()
-    if code not in _join_tokens or "device_token" not in _join_tokens[code]:
-        raise HTTPException(status_code=404, detail="Invalid download link")
+    enforce_rate_limit(
+        request,
+        key_prefix="join_download",
+        limit=settings.JOIN_DOWNLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+    )
 
-    info = _join_tokens[code]
-    # Consume token after download
-    del _join_tokens[code]
+    download_rec = token_store.get(kind=JOIN_DOWNLOAD_KIND, token=download_token)
+    if not download_rec:
+        used = token_store.get(kind=JOIN_DOWNLOAD_KIND, token=download_token, allow_consumed=True)
+        if used and used.is_consumed:
+            raise HTTPException(status_code=410, detail="Download link already used")
+        raise HTTPException(status_code=404, detail="Invalid or expired download link")
+    if not token_store.consume(kind=JOIN_DOWNLOAD_KIND, token=download_token):
+        raise HTTPException(status_code=410, detail="Download link already used")
+
+    join_code = str(download_rec.payload.get("join_code", "")).upper()
+    join_rec = token_store.get(kind=JOIN_CODE_KIND, token=join_code)
+    if not join_rec:
+        raise HTTPException(status_code=404, detail="Enrollment code is invalid or expired")
+    if not token_store.consume(kind=JOIN_CODE_KIND, token=join_code):
+        raise HTTPException(status_code=410, detail="Enrollment code already used")
+    info = join_rec.payload
+    if not info.get("device_token") or not info.get("device_id"):
+        raise HTTPException(status_code=400, detail="Enrollment is incomplete. Verify code again.")
 
     # Build the .env content
     env_content = f"""SERVER_URL={info['server_url']}
@@ -215,6 +288,24 @@ echo "Installation complete! Run: bash start_mac.sh"
 """
 
     # Create ZIP in memory
+    agent_dir = Path(__file__).parent.parent.parent.parent.parent.parent / "agent"
+    required_agent_files = [
+        "agent.py",
+        "requirements.txt",
+        "core/config.py",
+        "capture/window_tracker.py",
+        "capture/input_monitor.py",
+        "sync/queue.py",
+        "sync/client.py",
+    ]
+    missing_required = [p for p in required_agent_files if not (agent_dir / p).exists()]
+    if missing_required:
+        log.error("join_package_missing_files", missing=missing_required)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent package is incomplete. Missing files: {', '.join(missing_required)}",
+        )
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("pulsedesk-agent/.env", env_content)
@@ -225,20 +316,14 @@ echo "Installation complete! Run: bash start_mac.sh"
         zf.writestr("pulsedesk-agent/install_mac.sh", install_mac)
 
         # Include core agent files
-        agent_dir = Path(__file__).parent.parent.parent.parent.parent.parent / "agent"
-        agent_files = [
-            "agent.py", "requirements.txt",
-            "core/config.py", "core/__init__.py",
-            "capture/window_tracker.py", "capture/input_monitor.py", "capture/__init__.py",
-            "sync/queue.py", "sync/client.py", "sync/__init__.py",
-        ]
-        for rel_path in agent_files:
+        for rel_path in required_agent_files:
             full_path = agent_dir / rel_path
             if full_path.exists():
                 zf.write(full_path, f"pulsedesk-agent/{rel_path}")
 
     zip_buffer.seek(0)
-    filename = f"pulsedesk-agent-{info['employee_name'].replace(' ', '_')}.zip"
+    safe_name = sanitize_filename_component(str(info["employee_name"]).replace(" ", "_"))
+    filename = f"pulsedesk-agent-{safe_name}.zip"
 
     return StreamingResponse(
         zip_buffer,

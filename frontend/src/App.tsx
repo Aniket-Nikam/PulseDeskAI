@@ -30,23 +30,23 @@ const queryClient = new QueryClient({
 });
 
 function SessionValidator({ children }: { children: React.ReactNode }) {
-  const { accessToken, refreshToken, setAdmin, setTokens, logout, isHydrated } = useAuthStore();
+  const { setAdmin, logout, isHydrated } = useAuthStore();
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
     if (!isHydrated) return;
-    if (!accessToken) { setChecking(false); return; }
 
     authApi.me()
       .then(me => setAdmin(me))
       .catch(async err => {
-        if (err?.response?.status === 401 && refreshToken) {
+        if (err?.response?.status === 401) {
           try {
-            const data = await authApi.refresh(refreshToken);
-            setTokens(data.access_token, data.refresh_token);
+            await authApi.refresh();
             const me = await authApi.me();
             setAdmin(me);
-          } catch { logout(); }
+          } catch {
+            logout();
+          }
         }
       })
       .finally(() => setChecking(false));
@@ -83,6 +83,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function RequireUnauth({ children }: { children: React.ReactNode }) {
+  const isAuthenticated = useAuthStore(selectIsAuthenticated);
+  if (isAuthenticated) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
 export default function App() {
   useEffect(() => {
     const saved = localStorage.getItem("pd-theme");
@@ -95,7 +101,7 @@ export default function App() {
         <SessionValidator>
           <AlertSystem />
           <Routes>
-            <Route path="/login" element={<LoginPage />} />
+            <Route path="/login" element={<RequireUnauth><LoginPage /></RequireUnauth>} />
             <Route path="/" element={<RequireAuth><AppLayout /></RequireAuth>}>
               <Route index element={<OverviewPage />} />
               <Route path="live" element={<LiveScreensPage />} />

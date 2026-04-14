@@ -1,20 +1,21 @@
 """
-PulseDesk Agent Routes v4
-Fixed: device info update on every heartbeat, productivity score live,
-session handling robust, all 500 errors eliminated.
+PulseDesk Agent Routes v5
+Refactored: scoring consolidated, imports cleaned up, background job marked.
 """
 
 import uuid
+import socket
 import platform as plat
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.session import get_db
-from app.models import Device, DeviceStatus, ActivityEvent, WorkSession, ActivityType
+from app.models import Device, DeviceStatus, ActivityEvent, WorkSession
 from app.schemas import (
     ActivityBatch, BatchResponse,
     SessionStart, SessionEnd,
@@ -23,11 +24,20 @@ from app.schemas import (
 from app.services.categorizer import categorize_app
 from app.services.anomaly_detector import check_anomalies
 from app.services.ws_broadcaster import broadcast_employee_update
+from app.services.scoring import compute_session_score
 from app.core.config import settings
 from app.core.logging import get_logger
 
 router = APIRouter(tags=["agent"])
 log = get_logger("agent")
+
+
+class DeviceInfoPatchRequest(BaseModel):
+    device_token: str = Field(min_length=32, max_length=128)
+    hostname: Optional[str] = Field(default=None, max_length=255)
+    platform: Optional[str] = Field(default=None, max_length=50)
+    os_version: Optional[str] = Field(default=None, max_length=100)
+    agent_version: Optional[str] = Field(default=None, max_length=20)
 
 
 async def _get_approved_device(token: str, db: AsyncSession) -> Device:
@@ -66,21 +76,23 @@ async def heartbeat(payload: HeartbeatIn, db: AsyncSession = Depends(get_db)):
 
 
 @router.patch("/agent/device-info")
-async def update_device_info(payload: dict, db: AsyncSession = Depends(get_db)):
-    token = payload.get("device_token", "")
+async def update_device_info(payload: DeviceInfoPatchRequest, db: AsyncSession = Depends(get_db)):
+    token = payload.device_token
     result = await db.execute(select(Device).where(Device.device_token == token))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=401, detail="Unknown device")
+    if device.status != DeviceStatus.approved:
+        raise HTTPException(status_code=403, detail="Device not approved")
 
-    if payload.get("hostname"):
-        device.hostname = payload["hostname"]
-    if payload.get("platform"):
-        device.platform = payload["platform"]
-    if payload.get("os_version"):
-        device.os_version = payload["os_version"][:100]
-    if payload.get("agent_version"):
-        device.agent_version = payload["agent_version"]
+    if payload.hostname:
+        device.hostname = payload.hostname
+    if payload.platform:
+        device.platform = payload.platform
+    if payload.os_version:
+        device.os_version = payload.os_version
+    if payload.agent_version:
+        device.agent_version = payload.agent_version
 
     await db.commit()
     log.info("device_info_updated", hostname=device.hostname, platform=device.platform)
@@ -130,7 +142,7 @@ async def end_session(payload: SessionEnd, db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
     session.ended_at = now
     session.duration_seconds = int((now - session.started_at).total_seconds())
-    session.productivity_score = _compute_score(session)
+    session.productivity_score = compute_session_score(session)
     await db.commit()
     return {"status": "closed"}
 
@@ -144,14 +156,12 @@ async def ingest_events(payload: ActivityBatch, db: AsyncSession = Depends(get_d
 
     # ── Update device info if still pending ───────────────────────────────────
     if device.hostname in ("pending", "unknown", "", None):
-        import socket
         try:
             device.hostname = socket.gethostname()
         except Exception:
             device.hostname = "unknown-device"
     if device.platform in ("unknown", "", None):
-        import platform as sys_plat
-        device.platform = sys_plat.system().lower()
+        device.platform = plat.system().lower()
 
     # ── Resolve session ────────────────────────────────────────────────────────
     session: Optional[WorkSession] = None
@@ -216,7 +226,7 @@ async def ingest_events(payload: ActivityBatch, db: AsyncSession = Depends(get_d
     # ── Update session ─────────────────────────────────────────────────────────
     session.active_seconds = (session.active_seconds or 0) + active_secs
     session.idle_seconds = (session.idle_seconds or 0) + idle_secs
-    session.productivity_score = _compute_score(session)
+    session.productivity_score = compute_session_score(session)
     device.last_heartbeat = datetime.now(timezone.utc)
 
     await db.commit()
@@ -226,13 +236,17 @@ async def ingest_events(payload: ActivityBatch, db: AsyncSession = Depends(get_d
               f"score={session.productivity_score}")
 
     # ── Anomaly detection ──────────────────────────────────────────────────────
+    # CRITICAL FIX: Do NOT use begin_nested() - a savepoint rollback silently
+    # kills ALL anomaly inserts when any single check raises an exception.
     try:
-        async with db.begin_nested():
-            await check_anomalies(device, payload.events, db)
+        await check_anomalies(device, payload.events, db)
     except Exception as e:
         log.warning(f"anomaly_check_error: {e}")
 
     # ── Trigger daily summary recompute in background ──────────────────────────
+    # TODO(background-job): Replace asyncio.create_task with a proper job queue
+    # (Celery/ARQ) for reliability. Current approach has no error tracking and
+    # the task can outlive the DB session.
     try:
         from app.services.aggregator import compute_daily_summaries
         import asyncio
@@ -264,24 +278,4 @@ async def ingest_events(payload: ActivityBatch, db: AsyncSession = Depends(get_d
     )
 
 
-def _compute_score(session: WorkSession) -> float:
-    """
-    Productivity score 0-100.
-    Based on active ratio, switch frequency, and focus blocks.
-    """
-    active = session.active_seconds or 0
-    idle = session.idle_seconds or 0
-    total = max(active + idle, 1)
-
-    active_ratio = active / total
-
-    # Switch penalty: >60 switches/hr is very distracting
-    hours = total / 3600
-    switches_per_hr = (session.app_switches or 0) / max(hours, 0.1)
-    switch_penalty = min(0.3, switches_per_hr / 200)
-
-    # Focus bonus: each 25min+ focus block adds up to 15%
-    focus_bonus = min(0.15, (session.focus_blocks or 0) * 0.03)
-
-    score = (active_ratio - switch_penalty + focus_bonus) * 100
-    return round(max(0.0, min(100.0, score)), 1)
+# NOTE: _compute_score has been consolidated into app.services.scoring.compute_session_score

@@ -44,6 +44,7 @@ class OfflineSyncQueue:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute(CREATE_TABLE)
             conn.execute(CREATE_STATE_TABLE)
             conn.commit()

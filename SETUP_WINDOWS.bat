@@ -81,7 +81,7 @@ if not exist "%BACKEND%\.env" (
         REM Create with defaults
         (
             echo # PulseDesk Configuration
-            echo DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/pulsedesk
+            echo DATABASE_URL=postgresql+asyncpg://postgres:YOUR_PASSWORD@localhost:5432/pulsedesk
             echo GROQ_API_KEY=YOUR_GROQ_API_KEY_HERE
             echo ALGORITHM=HS256
             echo SECRET_KEY=your-secret-key-change-me-in-production
@@ -137,11 +137,30 @@ echo [OK] Database schema ready
 REM ─── Create admin account ─────────────────────────────────────────────────
 echo [5/6] Creating admin account...
 cd /d "%BACKEND%"
-"%BACKEND%\venv\Scripts\python.exe" -m app.db.seed >nul 2>&1
-if errorlevel 1 (
-    echo [WARN] Admin creation may have failed, but setup continues
+set "ADMIN_EMAIL="
+set "ADMIN_PASSWORD="
+set "ADMIN_NAME="
+set /p ADMIN_EMAIL=Enter admin email:
+set /p ADMIN_NAME=Enter admin full name [Super Admin]:
+if "!ADMIN_NAME!"=="" set "ADMIN_NAME=Super Admin"
+set /p ADMIN_PASSWORD=Enter admin password (min 12 chars):
+
+if "!ADMIN_EMAIL!"=="" (
+    echo [ERROR] Admin email is required.
+    pause & exit /b 1
 )
-echo [OK] Admin account created (or already exists)
+if "!ADMIN_PASSWORD!"=="" (
+    echo [ERROR] Admin password is required.
+    pause & exit /b 1
+)
+
+"%BACKEND%\venv\Scripts\python.exe" -m app.db.seed
+if errorlevel 1 (
+    echo [ERROR] Admin creation failed.
+    echo Check that email/password are valid and password is at least 12 chars.
+    pause & exit /b 1
+)
+echo [OK] Admin account ready
 
 REM ─── Frontend packages ────────────────────────────────────────────────────
 echo [6/6] Installing frontend packages...
@@ -164,11 +183,9 @@ echo   Backend: http://localhost:8000
 echo   Frontend: http://localhost:5173
 echo   API Docs: http://localhost:8000/api/docs
 echo.
-echo   Default Login:
-echo   Email: admin@company.com
-echo   Password: changeme123!
-echo.
-echo   IMPORTANT: Change default password in production!
+echo   Admin Login:
+echo   Email: !ADMIN_EMAIL!
+echo   Password: (the one you entered above)
 echo.
 echo   Next: Run START_WINDOWS.bat to launch PulseDesk
 echo ================================================

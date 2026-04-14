@@ -5,12 +5,20 @@ import json
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-BASE = "http://localhost:8000/api/v1"
+BASE = os.getenv("PULSEDESK_API_BASE", "http://localhost:8000/api/v1").rstrip("/")
+ADMIN_EMAIL = os.getenv("PULSEDESK_ADMIN_EMAIL", "")
+ADMIN_PASSWORD = os.getenv("PULSEDESK_ADMIN_PASSWORD", "")
+EMP_ID = os.getenv("PULSEDESK_TEST_EMPLOYEE_ID", "")
+
+if not ADMIN_EMAIL or not ADMIN_PASSWORD or not EMP_ID:
+    raise RuntimeError(
+        "Set PULSEDESK_ADMIN_EMAIL, PULSEDESK_ADMIN_PASSWORD, and PULSEDESK_TEST_EMPLOYEE_ID before running."
+    )
 
 # Login
 req = urllib.request.Request(
     f"{BASE}/auth/login",
-    data=json.dumps({"email": "admin@company.com", "password": "changeme123"}).encode(),
+    data=json.dumps({"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}).encode(),
     headers={"Content-Type": "application/json"},
 )
 resp = urllib.request.urlopen(req)
@@ -18,8 +26,7 @@ data = json.loads(resp.read())
 token = data["access_token"]
 print(f"[OK] Login successful")
 
-# Get screenshots for Nikam Aniket (6725e0be-d289-4727-be1c-3e690ac9773f)
-EMP_ID = "6725e0be-d289-4727-be1c-3e690ac9773f"
+# Get screenshots for a configured employee id
 req = urllib.request.Request(
     f"{BASE}/screenshots/{EMP_ID}?limit=3",
     headers={"Authorization": f"Bearer {token}"},

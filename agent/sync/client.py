@@ -1,23 +1,15 @@
-"""
-PulseDesk Agent API Client v3
-- Supports DEVICE_TOKEN from .env (set by join portal download)
-- Syncs blocklist from server every 5 minutes
-- Reports blocked domain violations
-"""
-
 import logging
 import time
 import threading
 from typing import Optional, List
 import requests
-from requests.exceptions import ConnectionError, Timeout, RequestException
+from requests.exceptions import RequestException
 
 from core.config import config
 from sync.queue import OfflineSyncQueue
 
 log = logging.getLogger("api_client")
-TIMEOUT = 10
-
+TIMEOUT = 15
 
 class PulseDeskClient:
     def __init__(self, queue: OfflineSyncQueue):
@@ -27,7 +19,12 @@ class PulseDeskClient:
         self._blocklist: List[str] = []
         self._blocklist_last_sync = 0.0
 
-        # Try to load device token from env first, then from queue
+        # Create localized resilient session
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=5, pool_maxsize=5, max_retries=1)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
         import os
         env_token = os.getenv("DEVICE_TOKEN", "").strip()
         if env_token:
@@ -54,72 +51,145 @@ class PulseDeskClient:
     def blocklist(self) -> List[str]:
         return self._blocklist
 
+    def _post(self, path: str, json: dict = None, data: dict = None, files: dict = None):
+        """Unified internal post utilizing session with robust failure boundaries."""
+        url = f"{self.base_url}{path}"
+        try:
+            r = self.session.post(url, json=json, data=data, files=files, timeout=TIMEOUT)
+            r.raise_for_status()
+            self._is_online = True
+            return r
+        except RequestException as e:
+            self._is_online = False
+            raise e
+
+    def _get(self, path: str, params: dict = None):
+        url = f"{self.base_url}{path}"
+        try:
+            r = self.session.get(url, params=params, timeout=TIMEOUT)
+            r.raise_for_status()
+            self._is_online = True
+            return r
+        except RequestException as e:
+            self._is_online = False
+            raise e
+
     def sync_blocklist(self):
-        """Fetch active blocklist from server. Call every 5 minutes."""
         now = time.monotonic()
-        if now - self._blocklist_last_sync < 300:  # 5 min
+        if now - self._blocklist_last_sync < 300:
             return
         try:
-            resp = requests.get(
-                f"{self.base_url}/api/v1/blocker/domains/active-list",
-                timeout=TIMEOUT,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                self._blocklist = data.get("domains", [])
-                self._blocklist_last_sync = now
-                if self._blocklist:
-                    log.debug(f"blocklist_synced: {len(self._blocklist)} domains")
+            resp = self._get("/api/v1/blocker/domains/active-list")
+            data = resp.json()
+            self._blocklist = data.get("domains", [])
+            self._blocklist_last_sync = now
+            if self._blocklist:
+                log.info(f"blocklist_synced: {len(self._blocklist)} domains: {self._blocklist}")
         except RequestException:
             pass
 
-    def report_violation(self, domain: str, window_title: str, app_name: str):
-        """Report a blocked domain access to the server."""
+    def check_window_against_blocklist(self, app_name: Optional[str], window_title: Optional[str]) -> List[str]:
+        """
+        Check current active window against local blocklist.
+        Returns a list of matched domain strings if violations are detected, else an empty list.
+
+        Matching is bidirectional — extracts brand keyword from domain:
+          "netflix.com"  → keyword "netflix"  matches app "Netflix", title "Netflix - ..."
+          "youtube.com"  → keyword "youtube"  matches app "YouTube", title "YouTube - Chrome"
+          "twitch.tv"    → keyword "twitch"   matches app "Twitch", title "Watch Streams - Twitch"
+        """
+        if not self._blocklist:
+            return []
+
+        app_lower = (app_name or "").lower()
+        title_lower = (window_title or "").lower()
+
+        if not app_lower and not title_lower:
+            return []
+
+        found_domains = []
+        for domain in self._blocklist:
+            domain_lower = domain.lower()
+            keyword = domain_lower.split(".")[0]
+
+            if domain_lower in title_lower:
+                found_domains.append(domain)
+            elif keyword and keyword in app_lower:
+                found_domains.append(domain)
+            elif keyword and keyword in title_lower:
+                found_domains.append(domain)
+
+        return list(set(found_domains))
+
+    def force_sync_blocklist(self):
+        """Force immediate blocklist sync ignoring the 5-minute throttle. Call on startup."""
+        self._blocklist_last_sync = 0.0  # Reset throttle
+        self.sync_blocklist()
+
+    def report_violation(self, domain: str, window_title: str, app_name: str) -> bool:
+        """
+        Report a blocked domain violation to the backend.
+        Returns True if the backend requests an immediate screenshot (violation trigger).
+        """
         if not self.device_token:
-            return
+            return False
         try:
             from datetime import datetime, timezone
-            requests.post(
-                f"{self.base_url}/api/v1/blocker/violation",
+            resp = self._post(
+                "/api/v1/blocker/violation",
                 json={
                     "device_token": self.device_token,
                     "domain": domain,
                     "window_title": window_title or "",
                     "app_name": app_name or "",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
-                timeout=TIMEOUT,
+                }
             )
             log.warning(f"blocked_site_reported: {domain}")
-        except RequestException:
-            pass
+            data = resp.json()
+            return data.get("screenshot_requested", False)
+        except RequestException as e:
+            log.warning(f"violation_report_failed: {e}")
+            return False
 
-    def check_window_against_blocklist(self, app_name: Optional[str], window_title: Optional[str]) -> Optional[str]:
-        """Returns the matched blocked domain, or None if clean."""
-        if not self._blocklist:
-            return None
-        text = f"{(app_name or '').lower()} {(window_title or '').lower()}"
-        for domain in self._blocklist:
-            if domain.lower() in text:
-                return domain
-        return None
+    def check_screenshot_required(self) -> bool:
+        if not self.device_token:
+            return False
+        try:
+            resp = self._get("/api/v1/agent/screenshot-required", params={"device_token": self.device_token})
+            return resp.json().get("required", False)
+        except RequestException:
+            return False
+
+    def upload_screenshot(self, image_bytes: bytes, mime_type: str, trigger: str = "interval"):
+        if not self.device_token:
+            return
+        from datetime import datetime, timezone
+        try:
+            self._post(
+                "/api/v1/agent/screenshot",
+                data={
+                    "device_token": self.device_token,
+                    "captured_at": datetime.now(timezone.utc).isoformat(),
+                    "trigger": trigger,
+                },
+                files={"file": ("screenshot.jpg", image_bytes, mime_type)}
+            )
+            log.info("screenshot_uploaded")
+        except RequestException as e:
+            log.debug(f"screenshot_upload_failed: {e}")
 
     def enroll(self, hostname: str, platform: str, os_version: str) -> dict:
-        import socket
         payload = {
             "employee_email": config.employee_email,
-            "hostname": hostname or socket.gethostname(),
+            "hostname": hostname,
             "platform": platform,
             "os_version": os_version,
-            "agent_version": "3.0.0",
+            "agent_version": "4.0.0",
             "enrollment_code": self.queue.load_state("enrollment_code") or "",
         }
         try:
-            resp = requests.post(
-                f"{self.base_url}/api/v1/devices/enroll",
-                json=payload, timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
+            resp = self._post("/api/v1/devices/enroll", json=payload)
             data = resp.json()
             token = data.get("device_token")
             if token:
@@ -135,29 +205,21 @@ class PulseDeskClient:
         if not self.device_token:
             return None
         try:
-            resp = requests.post(
-                f"{self.base_url}/api/v1/agent/session/start",
-                json={"device_token": self.device_token}, timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
+            resp = self._post("/api/v1/agent/session/start", json={"device_token": self.device_token})
             session_id = resp.json().get("session_id")
             if session_id:
                 self.session_id = session_id
                 self.queue.save_state("session_id", session_id)
             return session_id
         except RequestException as e:
-            log.warning(f"session_start_failed: {e}")
+            log.debug(f"session_start_delayed: {e}")
             return None
 
     def end_session(self):
         if not self.device_token or not self.session_id:
             return
         try:
-            requests.post(
-                f"{self.base_url}/api/v1/agent/session/end",
-                json={"device_token": self.device_token, "session_id": self.session_id},
-                timeout=TIMEOUT,
-            )
+            self._post("/api/v1/agent/session/end", json={"device_token": self.device_token, "session_id": self.session_id})
             self.session_id = None
             self.queue.save_state("session_id", "")
         except RequestException:
@@ -166,17 +228,18 @@ class PulseDeskClient:
     def send_heartbeat(self) -> bool:
         if not self.device_token:
             return False
+        import platform, socket
         try:
-            resp = requests.post(
-                f"{self.base_url}/api/v1/agent/heartbeat",
-                json={"device_token": self.device_token}, timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
-            self._is_online = True
+            self._post("/api/v1/agent/heartbeat", json={
+                "device_token": self.device_token,
+                "hostname": socket.gethostname(),
+                "platform": platform.system().lower(),
+                "os_version": platform.version()[:100],
+                "agent_version": "4.0.0",
+            })
             self.sync_blocklist()
             return True
         except RequestException:
-            self._is_online = False
             return False
 
     def send_events(self, events: list) -> bool:
@@ -187,51 +250,39 @@ class PulseDeskClient:
             "session_id": self.session_id,
             "events": events,
         }
+        
+        # Always attempt flush prior to sending new payloads 
         self._flush_offline_queue()
+        
         try:
-            resp = requests.post(
-                f"{self.base_url}/api/v1/agent/events",
-                json=payload, timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
+            resp = self._post("/api/v1/agent/events", json=payload)
             data = resp.json()
             server_session = data.get("session_id")
             if server_session and server_session != self.session_id:
                 self.session_id = server_session
                 self.queue.save_state("session_id", server_session)
-            self._is_online = True
             log.debug(f"events_sent: accepted={data.get('accepted', 0)}")
             return True
-        except (ConnectionError, Timeout):
-            log.warning("server_offline: queuing events locally")
-            self.queue.enqueue_batch(payload)
-            self._is_online = False
-            return False
         except RequestException as e:
-            log.error(f"send_events_error: {e}")
+            log.warning(f"server_offline: queuing {len(events)} events locally")
             self.queue.enqueue_batch(payload)
-            self._is_online = False
             return False
 
     def _flush_offline_queue(self):
         pending = self.queue.pending_count()
         if pending == 0:
             return
+            
         batches = self.queue.dequeue_batch(limit=5)
         sent_ids = []
         for queue_id, batch_payload in batches:
             try:
-                resp = requests.post(
-                    f"{self.base_url}/api/v1/agent/events",
-                    json=batch_payload, timeout=TIMEOUT,
-                )
-                if resp.status_code < 400:
-                    sent_ids.append(queue_id)
-                else:
-                    self.queue.mark_failed(queue_id)
+                self._post("/api/v1/agent/events", json=batch_payload)
+                sent_ids.append(queue_id)
             except RequestException:
                 self.queue.mark_failed(queue_id)
-                break
+                break  # Stop flush on first failure to maintain order
+                
         if sent_ids:
             self.queue.mark_sent(sent_ids)
-            log.info(f"offline_queue_flushed: {len(sent_ids)} batches")
+            log.info(f"offline_queue_flushed: restored {len(sent_ids)} batches")

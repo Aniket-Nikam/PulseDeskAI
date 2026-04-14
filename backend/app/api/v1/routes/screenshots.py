@@ -7,20 +7,23 @@ import uuid
 import os
 import io
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete as sa_delete
+from sqlalchemy import select
 
 from app.db.session import get_db
 from app.models import Device, DeviceStatus, Screenshot, ScreenshotPolicy, SnapshotPolicy
 from app.schemas import PolicyCreate
-from app.api.v1.routes.auth import get_current_admin
+from app.api.v1.routes.auth import require_admin_read, require_admin_write
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.security import decode_token
+from app.core.files import safe_path_join, sanitize_filename_component
+from app.core.rate_limit import enforce_rate_limit
+from app.core.audit import log_admin_action
 from app.models import Admin as AdminModel
 from jose import JWTError
 
@@ -30,38 +33,66 @@ log = get_logger("screenshots")
 os.makedirs(settings.SCREENSHOT_DIR, exist_ok=True)
 
 
+def _safe_file_exists(file_path: str) -> bool:
+    try:
+        return safe_path_join(settings.SCREENSHOT_DIR, file_path).exists()
+    except HTTPException:
+        return False
+
+
 @router.post("/agent/screenshot", status_code=201)
 async def upload_screenshot(
+    request: Request,
     device_token: str = Form(...),
     captured_at: str = Form(...),
     trigger: str = Form(default="interval"),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
+    enforce_rate_limit(
+        request,
+        key_prefix="agent_screenshot_upload",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        include_auth_fingerprint=False,
+    )
+
     result = await db.execute(select(Device).where(Device.device_token == device_token))
     device = result.scalar_one_or_none()
     if not device or device.status != DeviceStatus.approved:
         raise HTTPException(status_code=401, detail="Device not authorized")
 
-    contents = await file.read()
+    if file.content_type not in {"image/jpeg", "image/jpg", "image/png"}:
+        raise HTTPException(status_code=400, detail="Unsupported image content type")
 
+    contents = await file.read()
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Screenshot upload exceeds max size")
+    file_ext = "png" if file.content_type == "image/png" else "jpg"
+
+    # TODO: Background Task
+    # Moving the `_compress_image` call and the file I/O `f.write()` to a background 
+    # worker (like Celery/Arq) will significantly improve the endpoint's response time 
+    # and reduce blocking of the FastAPI worker threads.
     # Try to compress with Pillow if available
     try:
-        from PIL import Image
         if len(contents) > settings.SCREENSHOT_MAX_SIZE_KB * 1024:
             contents = _compress_image(contents, settings.SCREENSHOT_MAX_SIZE_KB)
+            file_ext = "jpg"
     except ImportError:
         pass  # Pillow not installed, save as-is
 
     shot_id = uuid.uuid4()
-    filename = f"{device.employee_id}_{shot_id}.jpg"
-    filepath = os.path.join(settings.SCREENSHOT_DIR, filename)
+    filename = sanitize_filename_component(f"{device.employee_id}_{shot_id}.{file_ext}")
+    filepath = safe_path_join(settings.SCREENSHOT_DIR, filename)
 
     with open(filepath, "wb") as f:
         f.write(contents)
 
     try:
         ts = datetime.fromisoformat(captured_at)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
     except ValueError:
         ts = datetime.now(timezone.utc)
 
@@ -77,42 +108,82 @@ async def upload_screenshot(
     db.add(screenshot)
     await db.commit()
     log.info("screenshot_saved", employee_id=str(device.employee_id), size_bytes=len(contents))
+    
+    # TRIGGER ASYNC AI ANALYSIS
+    try:
+        from app.services.screenshot_ai import process_screenshot_with_ai_task
+        import asyncio
+        asyncio.create_task(process_screenshot_with_ai_task(shot_id))
+    except Exception as e:
+        log.error(f"failed to start async screenshot AI task: {e}")
+
     return {"id": str(shot_id), "status": "saved"}
 
 
-@router.get("/screenshots/{employee_id}", response_model=List[dict])
+@router.get("/screenshots/{employee_id}", response_model=dict)
 async def list_screenshots(
     employee_id: uuid.UUID,
-    limit: int = 50,
-    admin=Depends(get_current_admin),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=21, ge=1, le=200),
+    sort: str = Query(default="desc"),
+    date: str = Query(default=None, description="Filter by date YYYY-MM-DD"),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Screenshot)
-        .where(Screenshot.employee_id == employee_id)
-        .order_by(Screenshot.captured_at.desc())
-        .limit(limit)
+    from sqlalchemy import func
+    from datetime import datetime, timedelta
+
+    base_filter = Screenshot.employee_id == employee_id
+    filters = [base_filter]
+
+    if date:
+        try:
+            day = datetime.strptime(date, "%Y-%m-%d")
+            next_day = day + timedelta(days=1)
+            filters.append(Screenshot.captured_at >= day)
+            filters.append(Screenshot.captured_at < next_day)
+        except ValueError:
+            pass
+
+    count_result = await db.execute(
+        select(func.count(Screenshot.id)).where(*filters)
     )
+    total = count_result.scalar() or 0
+
+    query = select(Screenshot).where(*filters)
+    if sort == "asc":
+        query = query.order_by(Screenshot.captured_at.asc())
+    else:
+        query = query.order_by(Screenshot.captured_at.desc())
+
+    result = await db.execute(query.offset(skip).limit(limit))
     shots = result.scalars().all()
-    return [
+
+    items = [
         {
             "id": str(s.id),
             "captured_at": s.captured_at.isoformat(),
             "trigger": s.trigger,
             "file_size_bytes": s.file_size_bytes,
             "url": f"/api/v1/screenshots/view/{s.id}",
-            "file_exists": os.path.exists(
-                os.path.join(settings.SCREENSHOT_DIR, s.file_path)
-            ),
+            "file_exists": _safe_file_exists(s.file_path),
         }
         for s in shots
     ]
+    return {
+        "items": items,
+        "total": total,
+        "page": (skip // limit) + 1,
+        "page_size": limit,
+        "pages": max((total + limit - 1) // limit, 1),
+    }
 
 
 @router.get("/screenshots/view/{screenshot_id}")
 async def view_screenshot(
     screenshot_id: uuid.UUID,
-    token: str = Query(default=None),
+    request: Request,
+    token: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -120,7 +191,18 @@ async def view_screenshot(
       - Authorization: Bearer <token>  header  (API calls)
       - ?token=<jwt>  query parameter          (<img src> tags)
     """
-    # Validate the token from query parameter
+    # Accept Bearer token header for API clients; query token for <img src> tags.
+    if token and not settings.SCREENSHOT_QUERY_TOKEN_ENABLED:
+        token = None
+
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get(settings.ACCESS_COOKIE_NAME)
+
+    # Validate token
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -132,7 +214,7 @@ async def view_screenshot(
         if not admin_id:
             raise HTTPException(status_code=401, detail="Invalid token")
         result_admin = await db.execute(
-            select(AdminModel).where(AdminModel.id == admin_id, AdminModel.is_active == True)
+            select(AdminModel).where(AdminModel.id == admin_id, AdminModel.is_active)
         )
         admin = result_admin.scalar_one_or_none()
         if not admin:
@@ -145,16 +227,17 @@ async def view_screenshot(
     if not shot:
         raise HTTPException(status_code=404, detail="Screenshot not found")
 
-    filepath = os.path.join(settings.SCREENSHOT_DIR, shot.file_path)
-    if not os.path.exists(filepath):
+    filepath = safe_path_join(settings.SCREENSHOT_DIR, shot.file_path)
+    if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    return FileResponse(filepath, media_type="image/jpeg")
+    media_type = "image/png" if filepath.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(str(filepath), media_type=media_type)
 
 
 @router.delete("/screenshots/cleanup-missing", status_code=200)
 async def cleanup_missing_screenshots(
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove all DB records whose files no longer exist on disk."""
@@ -163,20 +246,21 @@ async def cleanup_missing_screenshots(
 
     removed = 0
     for shot in all_shots:
-        filepath = os.path.join(settings.SCREENSHOT_DIR, shot.file_path)
-        if not os.path.exists(filepath):
+        filepath = safe_path_join(settings.SCREENSHOT_DIR, shot.file_path)
+        if not filepath.exists():
             await db.delete(shot)
             removed += 1
 
     await db.commit()
     log.info("cleanup_missing_screenshots", removed=removed, admin=str(admin.id))
+    log_admin_action("cleanup_missing_screenshots", admin_id=str(admin.id), removed=removed)
     return {"status": "cleaned", "removed": removed}
 
 
 @router.delete("/screenshots/{screenshot_id}", status_code=200)
 async def delete_screenshot(
     screenshot_id: uuid.UUID,
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a single screenshot (DB record + file on disk)."""
@@ -186,8 +270,8 @@ async def delete_screenshot(
         raise HTTPException(status_code=404, detail="Screenshot not found")
 
     # Remove file from disk if it exists
-    filepath = os.path.join(settings.SCREENSHOT_DIR, shot.file_path)
-    if os.path.exists(filepath):
+    filepath = safe_path_join(settings.SCREENSHOT_DIR, shot.file_path)
+    if filepath.exists():
         try:
             os.remove(filepath)
             log.info("screenshot_file_deleted", file=shot.file_path)
@@ -198,6 +282,7 @@ async def delete_screenshot(
     await db.delete(shot)
     await db.commit()
     log.info("screenshot_deleted", id=str(screenshot_id), admin=str(admin.id))
+    log_admin_action("screenshot_deleted", admin_id=str(admin.id), screenshot_id=str(screenshot_id))
     return {"status": "deleted", "id": str(screenshot_id)}
 
 
@@ -205,12 +290,12 @@ async def delete_screenshot(
 @router.post("/screenshot-policies", status_code=201)
 async def create_policy(
     payload: PolicyCreate,
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
     policy = ScreenshotPolicy(
         name=payload.name,
-        policy_type=payload.policy_type,
+        policy_type=SnapshotPolicy(payload.policy_type),
         interval_minutes=payload.interval_minutes,
         applies_to_all=payload.applies_to_all,
         department_id=payload.department_id,
@@ -220,17 +305,18 @@ async def create_policy(
     db.add(policy)
     await db.commit()
     await db.refresh(policy)
+    log_admin_action("screenshot_policy_created", admin_id=str(admin.id), policy_id=str(policy.id))
     return {"id": str(policy.id), "name": policy.name, "policy_type": policy.policy_type}
 
 
 @router.get("/screenshot-policies", response_model=List[dict])
 async def list_policies(
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(ScreenshotPolicy)
-        .where(ScreenshotPolicy.is_active == True)
+        .where(ScreenshotPolicy.is_active)
         .order_by(ScreenshotPolicy.created_at.desc())
     )
     policies = result.scalars().all()
@@ -249,6 +335,40 @@ async def list_policies(
     ]
 
 
+@router.patch("/screenshot-policies/{policy_id}/toggle", response_model=dict)
+async def toggle_policy(
+    policy_id: uuid.UUID,
+    admin=Depends(require_admin_write),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(ScreenshotPolicy).where(ScreenshotPolicy.id == policy_id))
+    policy = result.scalar_one_or_none()
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+        
+    policy.is_active = not policy.is_active
+    await db.commit()
+    log_admin_action("screenshot_policy_toggled", admin_id=str(admin.id), policy_id=str(policy.id), new_status=policy.is_active)
+    return {"id": str(policy.id), "is_active": policy.is_active}
+
+
+@router.delete("/screenshot-policies/{policy_id}", status_code=200)
+async def delete_policy(
+    policy_id: uuid.UUID,
+    admin=Depends(require_admin_write),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(ScreenshotPolicy).where(ScreenshotPolicy.id == policy_id))
+    policy = result.scalar_one_or_none()
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+        
+    await db.delete(policy)
+    await db.commit()
+    log_admin_action("screenshot_policy_deleted", admin_id=str(admin.id), policy_id=str(policy_id))
+    return {"status": "deleted", "id": str(policy_id)}
+
+
 @router.get("/agent/screenshot-required")
 async def check_screenshot_required(device_token: str, db: AsyncSession = Depends(get_db)):
     """Agent polls this to know if it should take a screenshot now."""
@@ -262,7 +382,7 @@ async def check_screenshot_required(device_token: str, db: AsyncSession = Depend
     # Check for active interval policy
     policy_result = await db.execute(
         select(ScreenshotPolicy).where(
-            ScreenshotPolicy.is_active == True,
+            ScreenshotPolicy.is_active,
             ScreenshotPolicy.policy_type == SnapshotPolicy.interval,
         ).limit(1)
     )
@@ -295,7 +415,8 @@ def _compress_image(data: bytes, max_kb: int) -> bytes:
     img = Image.open(io.BytesIO(data)).convert("RGB")
     max_dim = 1280
     if img.width > max_dim or img.height > max_dim:
-        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', 1)
+        img.thumbnail((max_dim, max_dim), resample)
     quality = 75
     while quality > 20:
         buf = io.BytesIO()

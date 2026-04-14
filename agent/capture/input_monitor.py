@@ -54,6 +54,23 @@ class InputMonitor:
         try:
             from pynput import keyboard, mouse
 
+            # Windows-specific patch: suppress NotImplementedError for unrecognized pointer events
+            import platform
+            if platform.system() == "Windows":
+                try:
+                    import pynput._util.win32
+                    orig_convert = pynput._util.win32.Listener._convert
+                    def safe_convert(self_obj, code, msg, lpdata):
+                        try:
+                            return orig_convert(self_obj, code, msg, lpdata)
+                        except NotImplementedError:
+                            # Ignore unknown Windows message types (like specific touchpad gestures)
+                            # Return something safe that doesn't forward a bad type tuple
+                            pass
+                    pynput._util.win32.Listener._convert = safe_convert
+                except Exception as e:
+                    log.warning(f"Failed to apply win32 pynput patch: {e}")
+
             self._keyboard_listener = keyboard.Listener(
                 on_press=self._on_key_press,
                 suppress=False,

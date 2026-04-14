@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle, XCircle, Monitor, RefreshCw } from "lucide-react";
+import { CheckCircle, XCircle, Monitor, RefreshCw, Trash2 } from "lucide-react";
 import { devicesApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import { OnlineBadge } from "../components/ui/OnlineBadge";
@@ -30,6 +30,11 @@ export function DevicesPage() {
 
   const revoke = useMutation({
     mutationFn: devicesApi.revoke,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["devices"] }); },
+  });
+
+  const deleteDevice = useMutation({
+    mutationFn: devicesApi.delete,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["devices"] }); },
   });
 
@@ -159,6 +164,16 @@ export function DevicesPage() {
                           disabled={revoke.isPending}
                         >
                           <XCircle size={12} /> Revoke
+                        </button>
+                      )}
+                      {d.status === "revoked" && (
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          style={{ color: "var(--danger)" }}
+                          onClick={() => { if (confirm("Permanently delete this device?")) deleteDevice.mutate(d.id); }}
+                          disabled={deleteDevice.isPending}
+                        >
+                          <Trash2 size={12} /> Delete
                         </button>
                       )}
                     </div>

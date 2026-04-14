@@ -3,14 +3,16 @@ import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff, Activity } from "lucide-react";
 import { authApi } from "../api/client";
 import { useAuthStore, selectIsAuthenticated } from "../store/authStore";
+import { BACKEND_ROOT } from "../config";
 
 export function LoginPage() {
+  const portalUrl = `${BACKEND_ROOT}/join`;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const { setAuth, setTokens } = useAuthStore();
+  const { setAuth } = useAuthStore();
   const isAuthenticated = useAuthStore(selectIsAuthenticated);
   const navigate = useNavigate();
 
@@ -23,15 +25,14 @@ export function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const loginData = await authApi.login(email, password);
-      setTokens(loginData.access_token, loginData.refresh_token);
+      await authApi.login(email, password);
       const me = await authApi.me();
-      setAuth(me, loginData.access_token, loginData.refresh_token);
+      setAuth(me);
       navigate("/", { replace: true });
     } catch (err: any) {
       const s = err?.response?.status;
       if (s === 401 || s === 422) setError("Invalid email or password.");
-      else if (!err?.response) setError("Cannot reach server. Is the backend running on port 8000?");
+      else if (!err?.response) setError("Cannot reach server. Check backend connectivity and API base URL.");
       else setError(err?.response?.data?.detail ?? "Login failed.");
     } finally {
       setLoading(false);
@@ -216,7 +217,7 @@ export function LoginPage() {
             <div style={{ fontSize: 12, color: "var(--text-tertiary)", lineHeight: 1.6, marginBottom: 10 }}>
               Ask your admin for a 6-digit join code, then visit the employee portal to get set up in 2 minutes — no technical knowledge needed.
             </div>
-            <a href="http://localhost:8000/join" target="_blank" rel="noopener noreferrer"
+            <a href={portalUrl} target="_blank" rel="noopener noreferrer"
               className="btn btn-secondary btn-sm"
               style={{ textDecoration: "none", display: "inline-flex" }}>
               Open employee portal →

@@ -4,15 +4,16 @@ from typing import Optional
 import hashlib
 import secrets
 import hmac
-
-# Suppress passlib's bcrypt version warning (cosmetic only, not a real error)
-warnings.filterwarnings("ignore", ".*error reading bcrypt version.*")
-warnings.filterwarnings("ignore", ".*trapped.*")
+import uuid
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from app.core.config import settings
+
+# Suppress passlib's bcrypt version warning (cosmetic only, not a real error)
+warnings.filterwarnings("ignore", ".*error reading bcrypt version.*")
+warnings.filterwarnings("ignore", ".*trapped.*")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -27,27 +28,60 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
+    now = datetime.now(timezone.utc)
+    expire = now + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    to_encode.update({"exp": expire, "type": "access"})
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": now,
+            "nbf": now,
+            "jti": str(uuid.uuid4()),
+            "iss": settings.TOKEN_ISSUER,
+            "aud": settings.TOKEN_AUDIENCE,
+            "type": "access",
+        }
+    )
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def create_refresh_token(data: dict) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire, "type": "refresh"})
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": now,
+            "nbf": now,
+            "jti": str(uuid.uuid4()),
+            "iss": settings.TOKEN_ISSUER,
+            "aud": settings.TOKEN_AUDIENCE,
+            "type": "refresh",
+        }
+    )
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    # Strict decode for newly-issued tokens.
+    try:
+        return jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+            audience=settings.TOKEN_AUDIENCE,
+            issuer=settings.TOKEN_ISSUER,
+        )
+    except JWTError:
+        # Compatibility fallback for older tokens issued before issuer/audience claims.
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
 
 
 def generate_device_token(device_id: str, employee_id: str) -> str:
     """Generate a stable HMAC device token for agent authentication."""
-    payload = f"{device_id}:{employee_id}:{settings.DEVICE_TOKEN_SECRET}"
+    payload = f"{device_id}:{employee_id}"
     return hmac.new(
         settings.DEVICE_TOKEN_SECRET.encode(),
         payload.encode(),
@@ -58,3 +92,7 @@ def generate_device_token(device_id: str, employee_id: str) -> str:
 def generate_enrollment_code() -> str:
     """Short human-readable enrollment code shown on device."""
     return secrets.token_hex(3).upper()
+
+
+def generate_one_time_token(num_bytes: int = 24) -> str:
+    return secrets.token_urlsafe(num_bytes)

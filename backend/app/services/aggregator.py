@@ -8,13 +8,11 @@ from datetime import datetime, timezone, timedelta, date
 from typing import Optional
 from collections import defaultdict
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.db.session import AsyncSessionLocal
 from app.models import (
-    Employee, ActivityEvent, WorkSession,
-    DailySummary, AppUsageDaily, AnomalyLog,
+    Employee, ActivityEvent, DailySummary, AnomalyLog,
 )
 from app.services.categorizer import is_productive_category
 from app.core.logging import get_logger
@@ -31,7 +29,7 @@ async def compute_daily_summaries(target_date: Optional[date] = None):
     day_end = day_start + timedelta(days=1)
 
     async with AsyncSessionLocal() as db:
-        emp_result = await db.execute(select(Employee).where(Employee.is_active == True))
+        emp_result = await db.execute(select(Employee).where(Employee.is_active))
         employees = emp_result.scalars().all()
         computed = 0
 

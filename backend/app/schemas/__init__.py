@@ -5,7 +5,7 @@ Request/response models for all API endpoints.
 
 from __future__ import annotations
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TypeVar, Generic
 import uuid
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
@@ -21,8 +21,8 @@ class TimestampMixin(BaseModel):
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
 class AdminLogin(BaseModel):
-    email: str  # str not EmailStr to allow .local domains
-    password: str
+    email: str = Field(min_length=3, max_length=255)  # str not EmailStr to allow .local domains
+    password: str = Field(min_length=1, max_length=256)
 
 
 class TokenResponse(BaseModel):
@@ -35,7 +35,7 @@ class TokenResponse(BaseModel):
 
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(min_length=10, max_length=4096)
 
 
 class AdminCreate(BaseModel):
@@ -116,11 +116,11 @@ class EmployeeOut(BaseModel):
 class DeviceEnrollRequest(BaseModel):
     """Sent by the agent on first run."""
     employee_email: EmailStr
-    hostname: str
-    platform: str
-    os_version: Optional[str] = None
-    agent_version: str = "1.0.0"
-    enrollment_code: str  # short code shown on device, admin uses this to approve
+    hostname: str = Field(min_length=1, max_length=255)
+    platform: str = Field(min_length=1, max_length=50)
+    os_version: Optional[str] = Field(default=None, max_length=100)
+    agent_version: str = Field(default="1.0.0", min_length=1, max_length=20)
+    enrollment_code: str = Field(default="", max_length=10)  # short code shown on device, admin uses this to approve
 
 
 class DeviceEnrollResponse(BaseModel):
@@ -156,8 +156,8 @@ class ActivityEventIn(BaseModel):
     """Single sample from agent. Batched in ActivityBatch."""
     timestamp: datetime
     activity_type: str  # active | idle | locked | away
-    active_app: Optional[str] = None
-    active_window_title: Optional[str] = None
+    active_app: Optional[str] = Field(default=None, max_length=200)
+    active_window_title: Optional[str] = Field(default=None, max_length=500)
     keystrokes: int = Field(default=0, ge=0)
     mouse_clicks: int = Field(default=0, ge=0)
     mouse_distance_px: int = Field(default=0, ge=0)
@@ -167,25 +167,25 @@ class ActivityEventIn(BaseModel):
 
 class ActivityBatch(BaseModel):
     """Agent sends up to 200 events per POST."""
-    device_token: str
+    device_token: str = Field(min_length=32, max_length=128)
     session_id: Optional[uuid.UUID] = None  # if continuing a session
     events: List[ActivityEventIn] = Field(max_length=200)
 
 
 class BatchResponse(BaseModel):
     accepted: int
-    session_id: uuid.UUID
+    session_id: Optional[uuid.UUID] = None
     server_time: datetime
 
 
 # ─── Session ──────────────────────────────────────────────────────────────────
 
 class SessionStart(BaseModel):
-    device_token: str
+    device_token: str = Field(min_length=32, max_length=128)
 
 
 class SessionEnd(BaseModel):
-    device_token: str
+    device_token: str = Field(min_length=32, max_length=128)
     session_id: uuid.UUID
 
 
@@ -207,11 +207,11 @@ class SessionOut(BaseModel):
 # ─── Heartbeat ────────────────────────────────────────────────────────────────
 
 class HeartbeatIn(BaseModel):
-    device_token: str
-    hostname: Optional[str] = None
-    platform: Optional[str] = None
-    os_version: Optional[str] = None
-    agent_version: Optional[str] = None
+    device_token: str = Field(min_length=32, max_length=128)
+    hostname: Optional[str] = Field(default=None, max_length=255)
+    platform: Optional[str] = Field(default=None, max_length=50)
+    os_version: Optional[str] = Field(default=None, max_length=100)
+    agent_version: Optional[str] = Field(default=None, max_length=20)
 
 
 class HeartbeatOut(BaseModel):
@@ -236,6 +236,7 @@ class EmployeeStatusOut(BaseModel):
     today_active_seconds: int
     today_productivity_score: Optional[float]
     last_seen: Optional[datetime]
+    device_count: Optional[int] = 0
 
 
 class TimelineBlock(BaseModel):
@@ -310,19 +311,20 @@ class AnomalyOut(BaseModel):
     description: str
     metadata: Optional[Dict[str, Any]]
     is_reviewed: bool
+    reviewed_at: Optional[datetime] = None
 
 
 # ─── Screenshot ───────────────────────────────────────────────────────────────
 
 class ScreenshotUpload(BaseModel):
-    device_token: str
+    device_token: str = Field(min_length=32, max_length=128)
     captured_at: datetime
-    trigger: str = "interval"
+    trigger: str = Field(default="interval", max_length=50)
 
 
 class PolicyCreate(BaseModel):
-    name: str
-    policy_type: str = "disabled"
+    name: str = Field(min_length=2, max_length=100)
+    policy_type: str = Field(default="disabled", max_length=50)
     interval_minutes: Optional[int] = None
     applies_to_all: bool = False
     department_id: Optional[uuid.UUID] = None
@@ -355,8 +357,10 @@ class ReportRow(BaseModel):
 
 # ─── Pagination ───────────────────────────────────────────────────────────────
 
-class PaginatedResponse(BaseModel):
-    items: List[Any]
+T = TypeVar("T")
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: List[T]
     total: int
     page: int
     page_size: int

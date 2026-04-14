@@ -5,8 +5,7 @@ import { employeesApi, api } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import { OnlineBadge } from "../components/ui/OnlineBadge";
 import { analyticsApi } from "../api/client";
-import { useAuthStore } from "../store/authStore";
-import type { Employee, EmployeeStatus } from "../types";
+import type { EmployeeStatus } from "../types";
 import { formatTime } from "../utils/format";
 
 export function LiveScreensPage() {
@@ -124,26 +123,43 @@ function ScreenCard({
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const token = useAuthStore((s) => s.accessToken);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setError(false);
-    api.get(`/screenshots/${employee.employee_id}?limit=1`)
-      .then((r) => {
-        const shots = r.data;
-        if (shots.length > 0 && shots[0].file_exists) {
-          setScreenshotUrl(`/api/v1/screenshots/view/${shots[0].id}?t=${tick}&token=${token}`);
+
+    api.get(`/screenshots/${employee.employee_id}?limit=1&sort=desc`)
+      .then(async (r) => {
+        if (cancelled) return;
+        const shots = r.data?.items || r.data || [];
+        if (shots.length > 0 && shots[0].file_exists !== false) {
+          // Fetch image via authenticated API as blob to bypass cookie issues
+          try {
+            const imgResp = await api.get(`/screenshots/view/${shots[0].id}`, {
+              responseType: "blob",
+            });
+            if (cancelled) return;
+            const blobUrl = URL.createObjectURL(imgResp.data);
+            setScreenshotUrl(blobUrl);
+          } catch {
+            if (!cancelled) setScreenshotUrl(null);
+          }
         } else {
           setScreenshotUrl(null);
         }
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       })
       .catch(() => {
-        setError(true);
-        setLoading(false);
+        if (!cancelled) { setError(true); setLoading(false); }
       });
-  }, [employee.employee_id, tick, token]);
+
+    return () => {
+      cancelled = true;
+      // Clean up previous blob URL
+      setScreenshotUrl((prev) => { if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev); return null; });
+    };
+  }, [employee.employee_id, tick]);
 
   return (
     <div className="card" style={{ overflow: "hidden" }}>

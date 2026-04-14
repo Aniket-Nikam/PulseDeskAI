@@ -4,26 +4,32 @@ Run once after DB is initialized:
     python -m app.db.seed
 
 Usage:
-    ADMIN_EMAIL=admin@yourcompany.com ADMIN_PASSWORD=changeme python -m app.db.seed
+    ADMIN_EMAIL=admin@yourcompany.com ADMIN_PASSWORD=<strong-password> python -m app.db.seed
 """
 
 import asyncio
 import os
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.db.session import AsyncSessionLocal, init_db
+from app.db.session import AsyncSessionLocal, ensure_schema_ready
 from app.models import Admin, UserRole
 from app.core.security import hash_password
 
 
 async def seed():
-    await init_db()
+    await ensure_schema_ready()
 
-    email = os.getenv("ADMIN_EMAIL", "admin@pulsedesk.local")
-    password = os.getenv("ADMIN_PASSWORD", "changeme123!")
-    full_name = os.getenv("ADMIN_NAME", "Super Admin")
+    email = os.getenv("ADMIN_EMAIL", "").strip().lower()
+    password = os.getenv("ADMIN_PASSWORD", "")
+    full_name = os.getenv("ADMIN_NAME", "Super Admin").strip()
+
+    if not email or not password:
+        raise RuntimeError("ADMIN_EMAIL and ADMIN_PASSWORD must be set to create initial admin")
+    if len(password) < 12:
+        raise RuntimeError("ADMIN_PASSWORD must be at least 12 characters")
+    if "changeme" in password.lower():
+        raise RuntimeError("ADMIN_PASSWORD must not contain insecure placeholder values")
 
     async with AsyncSessionLocal() as db:
         existing = await db.execute(select(Admin).where(Admin.email == email))
@@ -41,8 +47,7 @@ async def seed():
         db.add(admin)
         await db.commit()
         print(f"✓ Super admin created: {email}")
-        print(f"  Password: {password}")
-        print(f"  IMPORTANT: Change this password immediately after first login.")
+        print("  Password not echoed for security.")
 
 
 if __name__ == "__main__":

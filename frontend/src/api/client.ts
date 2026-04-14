@@ -1,26 +1,20 @@
 import axios from "axios";
 import { useAuthStore } from "../store/authStore";
+import { API_BASE_URL, APP_ORIGIN } from "../config";
 
-const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api/v1";
+const BASE = API_BASE_URL;
+const API_ROOT = BASE.replace(/\/api\/v1\/?$/, "").replace(/\/$/, "");
 
 export const api = axios.create({
   baseURL: BASE,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true,
   timeout: 15_000,
 });
 
-// Attach token from store on every request
-api.interceptors.request.use((config) => {
-  const token = useAuthStore.getState().accessToken;
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
+let _refreshing: Promise<void> | null = null;
 
-let _refreshing: Promise<string> | null = null;
-
-// Silent token refresh — only redirect to /login if refresh itself fails
+// Silent cookie-based session refresh.
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
@@ -33,23 +27,12 @@ api.interceptors.response.use(
       !original.url?.includes("/auth/")
     ) {
       original._retry = true;
-      const refreshToken = useAuthStore.getState().refreshToken;
-
-      if (!refreshToken) {
-        useAuthStore.getState().logout();
-        window.location.href = "/login";
-        return Promise.reject(error);
-      }
 
       // Deduplicate concurrent refresh attempts
       if (!_refreshing) {
-        _refreshing = axios
-          .post(`${BASE}/auth/refresh`, { refresh_token: refreshToken })
-          .then((r) => {
-            const { access_token, refresh_token } = r.data;
-            useAuthStore.getState().setTokens(access_token, refresh_token);
-            return access_token;
-          })
+        _refreshing = api
+          .post("/auth/refresh")
+          .then(() => undefined)
           .catch(() => {
             useAuthStore.getState().logout();
             window.location.href = "/login";
@@ -61,8 +44,7 @@ api.interceptors.response.use(
       }
 
       try {
-        const newToken = await _refreshing;
-        original.headers.Authorization = `Bearer ${newToken}`;
+        await _refreshing;
         return api(original);
       } catch {
         return Promise.reject(error);
@@ -79,8 +61,8 @@ export const authApi = {
   login: (email: string, password: string) =>
     api.post("/auth/login", { email, password }).then((r) => r.data),
   me: () => api.get("/auth/me").then((r) => r.data),
-  refresh: (token: string) =>
-    api.post("/auth/refresh", { refresh_token: token }).then((r) => r.data),
+  refresh: () => api.post("/auth/refresh").then((r) => r.data),
+  logout: () => api.post("/auth/logout").then((r) => r.data),
 };
 
 export const employeesApi = {
@@ -100,12 +82,17 @@ export const departmentsApi = {
 };
 
 export const devicesApi = {
-  list: () => api.get("/devices").then((r) => r.data),
-  pending: () => api.get("/devices/pending").then((r) => r.data),
+  list: () => api.get("/devices").then((r) => r.data.items ?? r.data),
+  pending: () => api.get("/devices/pending").then((r) => r.data.items ?? r.data),
   approve: (id: string) =>
     api.patch(`/devices/${id}/status`, { status: "approved" }).then((r) => r.data),
   revoke: (id: string) =>
     api.patch(`/devices/${id}/status`, { status: "revoked" }).then((r) => r.data),
+  delete: (id: string) => api.delete(`/devices/${id}`).then((r) => r.data),
+};
+
+export const screenshotsApi = {
+  delete: (id: string) => api.delete(`/screenshots/${id}`).then((r) => r.data),
 };
 
 export const analyticsApi = {
@@ -124,11 +111,26 @@ export const analyticsApi = {
     api.get("/analytics/anomalies", { params }).then((r) => r.data),
   reviewAnomaly: (id: string) =>
     api.patch(`/analytics/anomalies/${id}/review`).then((r) => r.data),
-  generateReport: (data: unknown) =>
-    api.post("/analytics/reports/generate", data).then((r) => r.data),
+  generateReport: (data: { employee_id?: string; days?: number; department_id?: string }) => {
+    const days = data.days ?? 7;
+    if (data.employee_id) {
+      return api.get(`/reports/pdf/${data.employee_id}`, {
+        params: { days },
+        responseType: "blob",
+      }).then((r) => r.data);
+    }
+    return api.get("/reports/pdf/team/all", {
+      params: { days, department_id: data.department_id },
+      responseType: "blob",
+    }).then((r) => r.data);
+  },
   screenshotPolicies: () => api.get("/screenshot-policies").then((r) => r.data),
   createPolicy: (data: unknown) =>
     api.post("/screenshot-policies", data).then((r) => r.data),
+  togglePolicy: (id: string) =>
+    api.patch(`/screenshot-policies/${id}/toggle`).then((r) => r.data),
+  deletePolicy: (id: string) =>
+    api.delete(`/screenshot-policies/${id}`).then((r) => r.data),
 };
 
 export const blockerApi = {
@@ -169,10 +171,13 @@ export const reportsApi = {
 };
 
 export const enrollApi = {
-  generateLink: async (employeeId: string, serverUrl: string) => {
-    // The join portal is mounted at root (no /api/v1 prefix), so we call the root URL directly
-    const rootUrl = BASE.replace(/\/api\/v1\/?$/, "");
-    const res = await api.post(`${rootUrl}/enroll/generate-link?employee_id=${employeeId}&server_url=${encodeURIComponent(serverUrl)}`);
-    return res.data;
-  },
+  generateLink: (employeeId: string, serverUrl: string) =>
+    api
+      .post(`/enroll/generate-join-link?employee_id=${employeeId}&server_url=${encodeURIComponent(serverUrl)}`)
+      .then((r) => r.data),
+};
+
+export const settingsApi = {
+  get: () => api.get("/settings").then((r) => r.data),
+  update: (data: Record<string, number>) => api.put("/settings", data).then((r) => r.data),
 };

@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle, Info, Shield, Clock, Zap, Globe } from "lucide-react";
-import { analyticsApi } from "../api/client";
+import { AlertTriangle, CheckCircle, Info, Shield, Clock, Zap, Globe, Settings, X, Save } from "lucide-react";
+import { analyticsApi, settingsApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import type { Anomaly } from "../types";
 import { formatDate } from "../utils/format";
@@ -64,6 +64,7 @@ export function AnomaliesPage() {
   const [showReviewed, setShowReviewed] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
+  const [showSettings, setShowSettings] = useState(false);
 
   const { data: anomalies = [], isLoading } = useQuery<Anomaly[]>({
     queryKey: ["anomalies", showReviewed],
@@ -88,12 +89,20 @@ export function AnomaliesPage() {
         title="Anomalies"
         subtitle="Behavioral alerts — what they mean and what to do"
         action={
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>
-            <input type="checkbox" checked={showReviewed} onChange={e => setShowReviewed(e.target.checked)} />
-            Show reviewed
-          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button className="btn btn-secondary" onClick={() => setShowSettings(true)} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <Settings size={14} /> Configure thresholds
+            </button>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: "var(--text-secondary)" }}>
+              <input type="checkbox" checked={showReviewed} onChange={e => setShowReviewed(e.target.checked)} />
+              Show reviewed
+            </label>
+          </div>
         }
       />
+
+      {/* Settings modal */}
+      {showSettings && <AnomalySettingsModal onClose={() => setShowSettings(false)} />}
 
       {/* What is each anomaly — explainer cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginBottom: 24 }}>
@@ -251,6 +260,179 @@ export function AnomaliesPage() {
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+
+/* ─── Anomaly Settings Modal ────────────────────────────────────────────────── */
+
+const SETTINGS_GROUPS = [
+  {
+    title: "Idle & Distraction",
+    icon: <Clock size={14} />,
+    color: "#f59e0b",
+    fields: [
+      { key: "excessive_idle_threshold_minutes", label: "Excessive idle threshold", unit: "min", desc: "Idle time before alert triggers during work hours", min: 5, max: 240 },
+      { key: "distraction_threshold_minutes", label: "Distraction threshold", unit: "min", desc: "Time on distraction apps per batch before alert", min: 1, max: 120 },
+      { key: "after_hours_min_active_minutes", label: "After-hours activity", unit: "min", desc: "Active time outside work hours before alert", min: 1, max: 60 },
+    ],
+  },
+  {
+    title: "Rapid App Switching",
+    icon: <Zap size={14} />,
+    color: "#8b5cf6",
+    fields: [
+      { key: "rapid_switching_high_threshold", label: "High threshold", unit: "switches", desc: "Switches per window → low severity", min: 1, max: 50 },
+      { key: "rapid_switching_critical_threshold", label: "Critical threshold", unit: "switches", desc: "Switches per window → high severity", min: 1, max: 100 },
+      { key: "rapid_switching_window_seconds", label: "Detection window", unit: "sec", desc: "Time window for measuring switch rate", min: 10, max: 600 },
+    ],
+  },
+];
+
+function AnomalySettingsModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const [form, setForm] = useState<Record<string, number>>({});
+  const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const { data: settings, isLoading } = useQuery({
+    queryKey: ["anomaly-settings"],
+    queryFn: settingsApi.get,
+  });
+
+  useEffect(() => {
+    if (settings) setForm(settings);
+  }, [settings]);
+
+  const save = useMutation({
+    mutationFn: settingsApi.update,
+    onSuccess: () => {
+      setMsg({ type: "success", text: "Settings saved successfully." });
+      qc.invalidateQueries({ queryKey: ["anomaly-settings"] });
+    },
+    onError: (err: any) => {
+      setMsg({ type: "error", text: err?.response?.data?.detail ?? "Failed to save settings." });
+    },
+  });
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 9999,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+      onClick={onClose}
+    >
+      <div
+        className="card"
+        style={{
+          width: 520, maxHeight: "85vh", overflow: "auto",
+          padding: 0,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "16px 20px", borderBottom: "1px solid var(--border-subtle)",
+        }}>
+          <div>
+            <h2 style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+              <Settings size={16} />
+              Anomaly Detection Settings
+            </h2>
+            <p style={{ fontSize: 11, color: "var(--text-tertiary)", margin: "2px 0 0 0" }}>
+              Configure when anomalies are triggered
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-tertiary)", padding: 4 }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: "16px 20px" }}>
+          {isLoading ? (
+            <div style={{ padding: 24, textAlign: "center", color: "var(--text-tertiary)" }}>Loading settings…</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+              {SETTINGS_GROUPS.map(group => (
+                <div key={group.title}>
+                  {/* Group header */}
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    fontSize: 12, fontWeight: 600, color: group.color,
+                    textTransform: "uppercase", letterSpacing: "0.04em",
+                    marginBottom: 8, paddingBottom: 6,
+                    borderBottom: `2px solid ${group.color}20`,
+                  }}>
+                    {group.icon}
+                    {group.title}
+                  </div>
+
+                  {/* Fields */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                    {group.fields.map((f, i) => (
+                      <div key={f.key} style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "10px 12px",
+                        background: i % 2 === 0 ? "var(--bg-secondary)" : "transparent",
+                        borderRadius: "var(--radius-sm)",
+                      }}>
+                        <div style={{ flex: 1, marginRight: 16 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>{f.label}</div>
+                          <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 1 }}>{f.desc}</div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                          <input
+                            type="number"
+                            className="input"
+                            style={{ width: 64, textAlign: "center", padding: "3px 6px", fontSize: 13 }}
+                            min={f.min}
+                            max={f.max}
+                            value={form[f.key] ?? ""}
+                            onChange={e => setForm(prev => ({ ...prev, [f.key]: parseInt(e.target.value) || 0 }))}
+                          />
+                          <span style={{ fontSize: 10, color: "var(--text-tertiary)", width: 48 }}>{f.unit}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              {msg && (
+                <div style={{
+                  padding: "8px 12px", fontSize: 13, borderRadius: "var(--radius-md)",
+                  background: msg.type === "success" ? "var(--success-subtle)" : "var(--danger-subtle)",
+                  color: msg.type === "success" ? "var(--success)" : "var(--danger)",
+                }}>
+                  {msg.text}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          display: "flex", gap: 8, justifyContent: "flex-end",
+          padding: "12px 20px", borderTop: "1px solid var(--border-subtle)",
+        }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={() => { setMsg(null); save.mutate(form); }}
+            disabled={save.isPending}
+            style={{ display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <Save size={14} />
+            {save.isPending ? "Saving…" : "Save settings"}
+          </button>
+        </div>
       </div>
     </div>
   );

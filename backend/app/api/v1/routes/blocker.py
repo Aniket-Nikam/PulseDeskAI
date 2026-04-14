@@ -9,15 +9,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from app.db.session import get_db
 from app.models import Device, DeviceStatus
-from app.api.v1.routes.auth import get_current_admin
+from app.api.v1.routes.auth import require_admin_read, require_admin_write
 from app.core.logging import get_logger
-from pydantic import BaseModel
+from app.core.config import settings
+from app.core.rate_limit import enforce_rate_limit
+from app.core.audit import log_admin_action
+from pydantic import BaseModel, field_validator
 
 router = APIRouter(prefix="/blocker", tags=["website-blocker"])
 log = get_logger("blocker")
@@ -36,6 +39,16 @@ class BlockedDomain(BaseModel):
     employee_id: Optional[str] = None
     created_at: Optional[str] = None
     is_active: bool = True
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        normalized = normalized.replace("https://", "").replace("http://", "").replace("www.", "")
+        normalized = normalized.split("/", 1)[0]
+        if not normalized or "." not in normalized:
+            raise ValueError("Invalid domain")
+        return normalized
 
 
 class BlockViolation(BaseModel):
@@ -89,7 +102,7 @@ log.info(f"blocker_defaults_loaded: {len(_blocked_domains)} domains")
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
 @router.get("/domains", response_model=List[dict])
-async def list_blocked_domains(admin=Depends(get_current_admin)):
+async def list_blocked_domains(admin=Depends(require_admin_read)):
     """List all blocked domains."""
     return list(_blocked_domains.values())
 
@@ -97,10 +110,10 @@ async def list_blocked_domains(admin=Depends(get_current_admin)):
 @router.post("/domains", status_code=201)
 async def add_blocked_domain(
     payload: BlockedDomain,
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_write),
 ):
     domain_id = str(uuid.uuid4())
-    domain = payload.domain.lower().strip().replace("https://", "").replace("http://", "").replace("www.", "")
+    domain = payload.domain
 
     _blocked_domains[domain_id] = {
         "id": domain_id,
@@ -116,26 +129,29 @@ async def add_blocked_domain(
         "violation_count": 0,
     }
     log.info("domain_blocked", domain=domain, by=str(admin.id))
+    log_admin_action("domain_blocked", admin_id=str(admin.id), domain=domain)
     return _blocked_domains[domain_id]
 
 
 @router.delete("/domains/{domain_id}", status_code=204)
-async def remove_blocked_domain(domain_id: str, admin=Depends(get_current_admin)):
+async def remove_blocked_domain(domain_id: str, admin=Depends(require_admin_write)):
     if domain_id not in _blocked_domains:
         raise HTTPException(status_code=404, detail="Domain not found")
     del _blocked_domains[domain_id]
+    log_admin_action("domain_removed", admin_id=str(admin.id), domain_id=domain_id)
 
 
 @router.patch("/domains/{domain_id}/toggle")
-async def toggle_domain(domain_id: str, admin=Depends(get_current_admin)):
+async def toggle_domain(domain_id: str, admin=Depends(require_admin_write)):
     if domain_id not in _blocked_domains:
         raise HTTPException(status_code=404, detail="Domain not found")
     _blocked_domains[domain_id]["is_active"] = not _blocked_domains[domain_id]["is_active"]
+    log_admin_action("domain_toggled", admin_id=str(admin.id), domain_id=domain_id)
     return _blocked_domains[domain_id]
 
 
 @router.post("/load-defaults", status_code=201)
-async def load_default_blocks(admin=Depends(get_current_admin)):
+async def load_default_blocks(admin=Depends(require_admin_write)):
     """Load the default block list (common distractions)."""
     added = 0
     existing_domains = {v["domain"] for v in _blocked_domains.values()}
@@ -157,6 +173,7 @@ async def load_default_blocks(admin=Depends(get_current_admin)):
                 "violation_count": 0,
             }
             added += 1
+    log_admin_action("domain_defaults_loaded", admin_id=str(admin.id), added=added)
     return {"added": added, "message": f"Loaded {added} default blocks"}
 
 
@@ -172,11 +189,18 @@ async def get_active_blocklist():
 
 
 @router.post("/violation")
-async def report_violation(payload: BlockViolation, db: AsyncSession = Depends(get_db)):
+async def report_violation(payload: BlockViolation, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Agent reports when a blocked domain is accessed.
     Creates an anomaly log entry and broadcasts to dashboard.
     """
+    enforce_rate_limit(
+        request,
+        key_prefix="blocker_violation",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+    )
+
     # Validate device
     result = await db.execute(
         select(Device).where(
@@ -223,11 +247,12 @@ async def report_violation(payload: BlockViolation, db: AsyncSession = Depends(g
                 employee_id=str(device.employee_id),
                 domain=payload.domain)
 
-    return {"status": "logged"}
+    # Instruct agent to immediately capture a violation screenshot
+    return {"status": "logged", "screenshot_requested": True, "trigger": "violation"}
 
 
 @router.get("/violations/summary")
-async def get_violation_summary(admin=Depends(get_current_admin)):
+async def get_violation_summary(admin=Depends(require_admin_read)):
     """Summary of which domains have been accessed most."""
     violations = [
         {"domain": v["domain"], "count": v.get("violation_count", 0), "category": v["category"]}

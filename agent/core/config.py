@@ -19,13 +19,23 @@ class AgentConfig:
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
+        def safe_int(key: str, default: int) -> int:
+            try:
+                return int(os.getenv(key, str(default)))
+            except ValueError:
+                return default
+
+        server_url = os.getenv("SERVER_URL", "").strip().rstrip("/")
+        if not server_url and os.getenv("ALLOW_LOCALHOST_DEFAULT", "false").lower() == "true":
+            server_url = "http://localhost:8000"
+            
         return cls(
-            server_url=os.getenv("SERVER_URL", "http://localhost:8000"),
+            server_url=server_url,
             employee_email=os.getenv("EMPLOYEE_EMAIL", ""),
-            sample_interval=int(os.getenv("SAMPLE_INTERVAL_SECONDS", "30")),
-            batch_interval=int(os.getenv("BATCH_INTERVAL_SECONDS", "30")),
-            heartbeat_interval=int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "60")),
-            idle_threshold=int(os.getenv("IDLE_THRESHOLD_SECONDS", "300")),
+            sample_interval=safe_int("SAMPLE_INTERVAL_SECONDS", 30),
+            batch_interval=safe_int("BATCH_INTERVAL_SECONDS", 30),
+            heartbeat_interval=safe_int("HEARTBEAT_INTERVAL_SECONDS", 60),
+            idle_threshold=safe_int("IDLE_THRESHOLD_SECONDS", 300),
             screenshot_enabled=os.getenv("SCREENSHOT_ENABLED", "false").lower() == "true",
             offline_db_path=os.getenv("OFFLINE_DB_PATH", "./pulsedesk_queue.db"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),

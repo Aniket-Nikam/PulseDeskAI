@@ -7,6 +7,7 @@ import { OnlineBadge } from "../components/ui/OnlineBadge";
 import type { Employee, Department } from "../types";
 import { formatDate } from "../utils/format";
 import { api } from "../api/client";
+import { APP_ORIGIN } from "../config";
 
 export function EmployeesPage() {
   const qc = useQueryClient();
@@ -243,7 +244,7 @@ export function EmployeesPage() {
 }
 
 function EnrollModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
-  const [serverUrl, setServerUrl] = useState("http://localhost:8000");
+  const [serverUrl, setServerUrl] = useState(APP_ORIGIN);
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");

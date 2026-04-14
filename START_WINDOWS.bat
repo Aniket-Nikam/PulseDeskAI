@@ -50,7 +50,7 @@ for /f "tokens=2 delims==" %%A in ('findstr /r "^GROQ_API_KEY=" "%BACKEND%\.env"
 )
 
 for /f "tokens=2 delims==" %%A in ('findstr /r "^DATABASE_URL=" "%BACKEND%\.env"') do (
-    if not "%%A"=="" if not "%%A"=="postgresql://postgres:YOUR_PASSWORD@localhost:5432/pulsedesk" set DB_CONFIGURED=true
+    if not "%%A"=="" if not "%%A"=="postgresql+asyncpg://postgres:YOUR_PASSWORD@localhost:5432/pulsedesk" set DB_CONFIGURED=true
 )
 
 if "!DB_CONFIGURED!"=="false" (
@@ -143,17 +143,17 @@ echo   API Docs: http://localhost:8000/api/docs
 echo   RedDoc: http://localhost:8000/api/redoc
 echo   Join Portal: http://localhost:8000/join
 echo.
-echo   DEFAULT LOGIN
-echo   Email: admin@company.com
-echo   Password: changeme123!
+echo   LOGIN
+echo   Use the admin credentials you configured during SETUP_WINDOWS.bat
+echo   If needed, reset via backend\reset_password.py
 echo.
 echo   ENDPOINTS (Authenticated)
 echo   /api/v1/employees - Employee management
 echo   /api/v1/analytics/timeline - Activity timeline
 echo   /api/v1/analytics/heatmap - Activity heatmap
 echo   /api/v1/ai/activity-patterns - AI activity analysis
-echo   /ai/burnout-risk/{id} - Burnout risk assessment
-echo   /ai/work-recommendations/{id} - Weekly report (Groq AI)
+echo   /api/v1/ai/burnout-risks - Burnout risk assessment
+echo   /api/v1/ai/work-recommendations/{id} - Weekly report (Groq AI)
 echo   /api/v1/devices - Device management
 echo   /api/v1/screenshots - Screenshot management
 echo.

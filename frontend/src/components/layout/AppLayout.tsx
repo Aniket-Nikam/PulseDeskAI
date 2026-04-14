@@ -7,7 +7,9 @@ import {
   Trophy, Settings, TrendingUp, Sparkles,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
+import { authApi } from "../../api/client";
 import { initials } from "../../utils/format";
+import { ErrorBoundary } from "../ui/ErrorBoundary";
 
 const NAV_GROUPS = [
   {
@@ -57,6 +59,16 @@ export function AppLayout() {
     setDark(next);
     document.documentElement.dataset.theme = next ? "dark" : "";
     localStorage.setItem("pd-theme", next ? "dark" : "light");
+  }
+
+  async function handleLogout() {
+    try {
+      await authApi.logout();
+    } catch {
+      // Ignore network errors during logout and still clear client state.
+    }
+    logout();
+    navigate("/login");
   }
 
   return (
@@ -187,7 +199,7 @@ export function AppLayout() {
               )}
             </div>
             {!collapsed && (
-              <button onClick={() => { logout(); navigate("/login"); }}
+              <button onClick={handleLogout}
                 title="Sign out"
                 style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "var(--text-tertiary)", display: "flex", flexShrink: 0 }}>
                 <LogOut size={13}/>
@@ -207,7 +219,9 @@ export function AppLayout() {
       </aside>
 
       <main style={{ flex: 1, overflow: "auto", minWidth: 0 }}>
-        <Outlet/>
+        <ErrorBoundary>
+          <Outlet/>
+        </ErrorBoundary>
       </main>
     </div>
   );

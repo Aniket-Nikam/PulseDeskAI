@@ -1,23 +1,19 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAuthStore } from "../store/authStore";
 import type { WsMessage } from "../types";
+import { WS_BASE_URL } from "../config";
 
 type MessageHandler = (msg: WsMessage) => void;
 
 export function useWebSocket(onMessage: MessageHandler) {
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const accessToken = useAuthStore((s) => s.accessToken);
+  const isAuthenticated = useAuthStore((s) => !!s.admin);
 
   const connect = useCallback(() => {
-    if (!accessToken) return;
+    if (!isAuthenticated) return;
 
-    const wsBase =
-      (import.meta.env.VITE_API_URL ?? "http://localhost:8000/api/v1")
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-
-    const socket = new WebSocket(`${wsBase}/ws/live?token=${accessToken}`);
+    const socket = new WebSocket(`${WS_BASE_URL}/ws/live`);
     ws.current = socket;
 
     socket.onopen = () => {
@@ -46,7 +42,7 @@ export function useWebSocket(onMessage: MessageHandler) {
     socket.onerror = () => {
       socket.close();
     };
-  }, [accessToken, onMessage]);
+  }, [isAuthenticated, onMessage]);
 
   useEffect(() => {
     connect();

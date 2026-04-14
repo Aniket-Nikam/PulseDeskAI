@@ -1,12 +1,14 @@
 """
 PulseDesk Analytics Routes — Production
 All endpoints use live data with daily summary as cache layer.
+Scoring consolidated into app.services.scoring.
 """
 
 import uuid
 from datetime import datetime, date, timedelta, timezone
-from typing import Optional, List
+from typing import Optional
 from collections import defaultdict
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,47 +19,29 @@ from app.models import (
     ActivityEvent, WorkSession, DailySummary,
     Employee, Department, Device, DeviceStatus, AnomalyLog, ActivityType,
 )
-from app.api.v1.routes.auth import get_current_admin
 from app.services.online_tracker import is_device_online, get_employee_last_event
-from app.services.categorizer import categorize_app, is_productive_category
-from app.core.config import settings
+from app.services.scoring import compute_score_from_events
 from app.core.logging import get_logger
+from app.core.audit import log_admin_action
+from app.api.v1.routes.auth import require_admin_read, require_admin_write
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 log = get_logger("analytics")
 
-
-def _score_from_events(events) -> float:
-    if not events:
-        return 0.0
-    active = sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.active)
-    idle = sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.idle)
-    total = max(active + idle, 1)
-    productive = sum(
-        e.sample_duration_seconds for e in events
-        if e.activity_type == ActivityType.active and is_productive_category(e.app_category)
-    )
-    active_ratio = active / total
-    productive_ratio = productive / max(active, 1)
-    apps = [e.active_app for e in events if e.active_app]
-    switches = sum(1 for i in range(1, len(apps)) if apps[i] != apps[i-1])
-    hours = total / 3600
-    switch_penalty = min(0.25, (switches / max(hours, 0.1)) / 100)
-    score = (active_ratio * 0.5 + productive_ratio * 0.4 - switch_penalty) * 100
-    return round(max(0.0, min(100.0, score)), 1)
+# NOTE: _score_from_events has been consolidated into app.services.scoring.compute_score_from_events
 
 
 # ── Overview ──────────────────────────────────────────────────────────────────
 
 @router.get("/overview")
 async def get_live_overview(
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(Employee, Department.name.label("dept_name"))
         .outerjoin(Department, Employee.department_id == Department.id)
-        .where(Employee.is_active == True)
+        .where(Employee.is_active)
         .order_by(Employee.full_name)
     )
     rows = result.all()
@@ -83,7 +67,7 @@ async def get_live_overview(
             ).limit(500)
         )
         today_events = today_events_result.scalars().all()
-        prod_score = _score_from_events(today_events) if today_events else None
+        prod_score = compute_score_from_events(today_events) if today_events else None
 
         device_result = await db.execute(
             select(Device).where(
@@ -133,8 +117,8 @@ async def get_live_overview(
 
 @router.get("/leaderboard")
 async def get_leaderboard(
-    days: int = Query(default=7, le=30),
-    admin=Depends(get_current_admin),
+    days: int = Query(default=7, ge=1, le=30),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -147,7 +131,7 @@ async def get_leaderboard(
     emp_result = await db.execute(
         select(Employee, Department.name.label("dept_name"))
         .outerjoin(Department, Employee.department_id == Department.id)
-        .where(Employee.is_active == True)
+        .where(Employee.is_active)
     )
     employees = emp_result.all()
 
@@ -196,7 +180,7 @@ async def get_leaderboard(
             if not events:
                 continue
 
-            avg_score = _score_from_events(events)
+            avg_score = compute_score_from_events(events)
             total_active = sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.active)
             focus = 0
             streak = 1 if avg_score >= 60 else 0
@@ -232,7 +216,7 @@ async def get_leaderboard(
 async def get_timeline(
     employee_id: uuid.UUID,
     date_str: str = Query(..., alias="date"),
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -240,7 +224,8 @@ async def get_timeline(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
 
-    day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
+    ist_tz = ZoneInfo("Asia/Kolkata")
+    day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=ist_tz)
     day_end = day_start + timedelta(days=1)
 
     result = await db.execute(
@@ -254,8 +239,8 @@ async def get_timeline(
 
     blocks = [
         {
-            "start": e.timestamp.isoformat(),
-            "end": (e.timestamp + timedelta(seconds=e.sample_duration_seconds)).isoformat(),
+            "start": e.timestamp.astimezone(ist_tz).isoformat(),
+            "end": (e.timestamp.astimezone(ist_tz) + timedelta(seconds=e.sample_duration_seconds)).isoformat(),
             "activity_type": e.activity_type,
             "app": e.active_app,
             "app_category": e.app_category,
@@ -265,7 +250,7 @@ async def get_timeline(
 
     active = sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.active)
     idle = sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.idle)
-    score = _score_from_events(events)
+    score = compute_score_from_events(events)
 
     return {
         "employee_id": str(employee_id),
@@ -284,7 +269,7 @@ async def get_timeline(
 async def get_heatmap(
     employee_id: uuid.UUID,
     date_str: str = Query(..., alias="date"),
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -292,7 +277,8 @@ async def get_heatmap(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date")
 
-    day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
+    ist_tz = ZoneInfo("Asia/Kolkata")
+    day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=ist_tz)
     day_end = day_start + timedelta(days=1)
 
     result = await db.execute(
@@ -307,7 +293,8 @@ async def get_heatmap(
 
     hourly: dict = defaultdict(int)
     for e in events:
-        hourly[e.timestamp.hour] += e.sample_duration_seconds
+        local_time = e.timestamp.astimezone(ist_tz)
+        hourly[local_time.hour] += e.sample_duration_seconds
 
     return {
         "employee_id": str(employee_id),
@@ -322,7 +309,7 @@ async def get_heatmap(
 async def get_app_usage(
     employee_id: uuid.UUID,
     date_str: str = Query(..., alias="date"),
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -330,7 +317,8 @@ async def get_app_usage(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date")
 
-    day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
+    ist_tz = ZoneInfo("Asia/Kolkata")
+    day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=ist_tz)
     day_end = day_start + timedelta(days=1)
 
     result = await db.execute(
@@ -368,8 +356,8 @@ async def get_app_usage(
 @router.get("/summaries/{employee_id}")
 async def get_summaries(
     employee_id: uuid.UUID,
-    days: int = Query(default=14, le=30),
-    admin=Depends(get_current_admin),
+    days: int = Query(default=14, ge=1, le=30),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(days=days)
@@ -393,7 +381,7 @@ async def get_summaries(
         events = ev_result.scalars().all()
         if not events:
             return []
-        score = _score_from_events(events)
+        score = compute_score_from_events(events)
         active = sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.active)
         return [{
             "id": str(uuid.uuid4()),
@@ -431,11 +419,14 @@ async def get_summaries(
 
 
 # ── Department comparison ─────────────────────────────────────────────────────
+# TODO(performance): This endpoint has N+1 query issues. For each department,
+# it loops over employees and fires separate queries. Should be refactored to
+# use aggregated subqueries or cached daily summaries.
 
 @router.get("/department-comparison")
 async def get_dept_comparison(
     date_str: str = Query(default=None, alias="date"),
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     target_date = date.fromisoformat(date_str) if date_str else datetime.now(timezone.utc).date()
@@ -450,7 +441,7 @@ async def get_dept_comparison(
         emp_result = await db.execute(
             select(Employee).where(
                 Employee.department_id == dept.id,
-                Employee.is_active == True,
+                Employee.is_active,
             )
         )
         employees = emp_result.scalars().all()
@@ -477,7 +468,7 @@ async def get_dept_comparison(
             )
             events = ev_result.scalars().all()
             if events:
-                scores.append(_score_from_events(events))
+                scores.append(compute_score_from_events(events))
                 actives.append(sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.active))
 
             dev_result = await db.execute(
@@ -511,7 +502,7 @@ async def get_anomalies(
     is_reviewed: Optional[bool] = Query(default=None),
     employee_id: Optional[uuid.UUID] = Query(default=None),
     limit: int = Query(default=50, le=200),
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     q = select(AnomalyLog, Employee.full_name.label("emp_name")).outerjoin(
@@ -543,7 +534,7 @@ async def get_anomalies(
 @router.patch("/anomalies/{anomaly_id}/review")
 async def review_anomaly(
     anomaly_id: uuid.UUID,
-    admin=Depends(get_current_admin),
+    admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(AnomalyLog).where(AnomalyLog.id == anomaly_id))
@@ -554,11 +545,13 @@ async def review_anomaly(
     anomaly.reviewed_by = admin.id
     anomaly.reviewed_at = datetime.now(timezone.utc)
     await db.commit()
+    log_admin_action("anomaly_reviewed", admin_id=str(admin.id), anomaly_id=str(anomaly_id))
     return {"status": "reviewed"}
 
 
 @router.post("/recompute-summaries")
-async def recompute(admin=Depends(get_current_admin)):
+async def recompute(admin=Depends(require_admin_write)):
     from app.services.aggregator import compute_daily_summaries
     count = await compute_daily_summaries()
+    log_admin_action("daily_summaries_recomputed", admin_id=str(admin.id), employees_computed=count)
     return {"status": "done", "employees_computed": count}

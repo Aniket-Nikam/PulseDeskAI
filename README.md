@@ -11,12 +11,14 @@ CREATE DATABASE pulsedesk;
 ### Step 2 — First time setup
 Double-click **SETUP_WINDOWS.bat**
 - When Notepad opens, change `YOUR_PASSWORD` to your PostgreSQL password
+- Configure `GROQ_API_KEY`, `SECRET_KEY`, and `DEVICE_TOKEN_SECRET`
+- Enter your admin email/password when prompted (used for first login)
 - Save and close → setup continues automatically
 
 ### Step 3 — Run every time
 Double-click **START_WINDOWS.bat**
 → Opens dashboard at http://localhost:5173
-→ Login: `admin@company.com` / `changeme123!`
+→ Login with the admin credentials you entered during setup
 
 ---
 
@@ -50,5 +52,4 @@ Double-click **START_WINDOWS.bat**
 | http://localhost:8000/api/docs | API documentation |
 
 ## Credentials
-Email: admin@company.com
-Password: changeme123!
+Use the admin email/password configured during `SETUP_WINDOWS.bat`.

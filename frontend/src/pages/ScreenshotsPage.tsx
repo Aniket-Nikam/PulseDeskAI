@@ -1,9 +1,8 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Camera, Shield, X, ZoomIn } from "lucide-react";
-import { analyticsApi, employeesApi } from "../api/client";
+import { Camera, Shield, X, ZoomIn, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
+import { analyticsApi, employeesApi, screenshotsApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
-import { useAuthStore } from "../store/authStore";
 import type { Employee } from "../types";
 import { formatDate } from "../utils/format";
 
@@ -31,6 +30,16 @@ export function ScreenshotsPage() {
       applies_to_all: policyForm.applies_to_all,
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["policies"] }); setShowPolicyForm(false); },
+  });
+
+  const togglePolicy = useMutation({
+    mutationFn: (id: string) => analyticsApi.togglePolicy(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["policies"] }),
+  });
+
+  const deletePolicy = useMutation({
+    mutationFn: (id: string) => analyticsApi.deletePolicy(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["policies"] }),
   });
 
   return (
@@ -100,7 +109,7 @@ export function ScreenshotsPage() {
 
       {/* Active policies */}
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "var(--text-primary)" }}>Active policies</h2>
+        <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "var(--text-primary)" }}>Policies</h2>
         {policies.length === 0 ? (
           <div className="card empty-state" style={{ padding: "var(--space-8)" }}>
             <div className="empty-state-icon"><Shield size={28} /></div>
@@ -112,7 +121,7 @@ export function ScreenshotsPage() {
             {policies.map((p: any) => (
               <div key={p.id} className="card" style={{ padding: "var(--space-4) var(--space-5)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <Shield size={16} style={{ color: p.policy_type === "disabled" ? "var(--text-tertiary)" : "var(--accent)" }} />
+                  <Shield size={16} style={{ color: !p.is_active ? "var(--text-tertiary)" : "var(--accent)" }} />
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
                     <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
@@ -121,9 +130,29 @@ export function ScreenshotsPage() {
                     </div>
                   </div>
                 </div>
-                <span className={`badge ${p.policy_type === "disabled" ? "badge-gray" : "badge-green"}`}>
-                  {p.policy_type === "disabled" ? "Disabled" : "Active"}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className={`badge ${!p.is_active ? "badge-gray" : "badge-green"}`}>
+                    {p.is_active ? "Active" : "Disabled"}
+                  </span>
+                  <button
+                    className={`btn btn-sm ${p.is_active ? "btn-secondary" : "btn-primary"}`}
+                    onClick={() => togglePolicy.mutate(p.id)}
+                    disabled={togglePolicy.isPending}
+                    title={p.is_active ? "Disable policy" : "Enable policy"}
+                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
+                  >
+                    {p.is_active ? <><ToggleRight size={14} /> Disable</> : <><ToggleLeft size={14} /> Enable</>}
+                  </button>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => { if (confirm(`Delete policy "${p.name}"?`)) deletePolicy.mutate(p.id); }}
+                    disabled={deletePolicy.isPending}
+                    title="Delete policy"
+                    style={{ color: "var(--danger)", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -153,25 +182,35 @@ export function ScreenshotsPage() {
   );
 }
 
-/** Build an authenticated image URL with the JWT token as a query param */
-function useAuthenticatedUrl(path: string): string {
-  const token = useAuthStore((s) => s.accessToken);
-  // path is like /api/v1/screenshots/view/<id>
-  return `${path}${path.includes("?") ? "&" : "?"}token=${token}`;
-}
-
 function ScreenshotGallery({ employeeId }: { employeeId: string }) {
+  const qc = useQueryClient();
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null);
-  const token = useAuthStore((s) => s.accessToken);
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState("desc");
+  const [dateFilter, setDateFilter] = useState("");
+  const limit = 21;
 
-  const { data: screenshots = [], isLoading } = useQuery({
-    queryKey: ["screenshots", employeeId],
-    queryFn: () => import("../api/client").then((m) => m.api.get(`/screenshots/${employeeId}?limit=20`)).then((r) => r.data),
+  const { data, isLoading } = useQuery({
+    queryKey: ["screenshots", employeeId, page, sort, dateFilter],
+    queryFn: () => {
+      let url = `/screenshots/${employeeId}?limit=${limit}&skip=${(page - 1) * limit}&sort=${sort}`;
+      if (dateFilter) url += `&date=${dateFilter}`;
+      return import("../api/client").then((m) => m.api.get(url)).then((r) => r.data);
+    },
   });
+
+  const deleteScreenshot = useMutation({
+    mutationFn: screenshotsApi.delete,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["screenshots", employeeId] }); }
+  });
+
+  const screenshots = data?.items || [];
+  const totalPages = data?.pages || 1;
+  const total = data?.total || 0;
 
   if (isLoading) return <div className="skeleton" style={{ height: 160, borderRadius: "var(--radius-xl)" }} />;
 
-  if (screenshots.length === 0) {
+  if (screenshots.length === 0 && page === 1 && !dateFilter) {
     return (
       <div className="card empty-state" style={{ padding: "var(--space-8)" }}>
         <div className="empty-state-icon"><Camera size={28} /></div>
@@ -181,21 +220,73 @@ function ScreenshotGallery({ employeeId }: { employeeId: string }) {
     );
   }
 
-  /** Build an authenticated image URL */
-  const authUrl = (url: string) => `${url}${url.includes("?") ? "&" : "?"}token=${token}`;
+  const imageUrl = (url: string) => `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
 
   return (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
-        {screenshots.map((s: any) => (
-          <ScreenshotCard
-            key={s.id}
-            screenshot={s}
-            imageUrl={authUrl(s.url)}
-            onExpand={() => setExpandedUrl(authUrl(s.url))}
+      {/* Toolbar: date filter + count + sort + pagination */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            type="date"
+            className="input"
+            style={{ width: "auto", padding: "4px 8px", fontSize: 12 }}
+            value={dateFilter}
+            onChange={(e) => { setDateFilter(e.target.value); setPage(1); }}
           />
+          {dateFilter && (
+            <button className="btn btn-sm btn-ghost" onClick={() => { setDateFilter(""); setPage(1); }} style={{ fontSize: 11 }}>
+              ✕ Clear date
+            </button>
+          )}
+          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            {total} screenshot{total !== 1 ? "s" : ""} {dateFilter ? `on ${dateFilter}` : ""} · Page {page}/{totalPages}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select className="input" style={{ width: "auto", padding: "4px 8px", fontSize: 12 }} value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }}>
+            <option value="desc">Newest first</option>
+            <option value="asc">Oldest first</option>
+          </select>
+          <button className="btn btn-sm btn-ghost" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
+          <button className="btn btn-sm btn-ghost" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+        </div>
+      </div>
+
+      {/* No results for date filter */}
+      {screenshots.length === 0 && dateFilter && (
+        <div className="card empty-state" style={{ padding: "var(--space-6)" }}>
+          <div className="empty-state-icon"><Camera size={24} /></div>
+          <div className="empty-state-title">No screenshots for {dateFilter}</div>
+          <div className="empty-state-body">Try a different date or clear the filter.</div>
+        </div>
+      )}
+
+      {/* Grid — flex layout so last-row items stretch to fill gaps */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+        {screenshots.map((s: any) => (
+          <div key={s.id} style={{ flex: "1 1 180px", maxWidth: "calc(100% / 3)", minWidth: 160 }}>
+            <ScreenshotCard
+              screenshot={s}
+              imageUrl={imageUrl(s.url)}
+              onExpand={() => setExpandedUrl(imageUrl(s.url))}
+              onDelete={() => { if (confirm("Delete this screenshot?")) deleteScreenshot.mutate(s.id); }}
+              isDeleting={deleteScreenshot.isPending && deleteScreenshot.variables === s.id}
+            />
+          </div>
         ))}
       </div>
+
+      {/* Bottom pagination */}
+      {totalPages > 1 && (
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, marginTop: 16 }}>
+          <button className="btn btn-sm btn-ghost" disabled={page <= 1} onClick={() => setPage(1)}>First</button>
+          <button className="btn btn-sm btn-ghost" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
+          <span style={{ fontSize: 13, color: "var(--text-secondary)", padding: "0 8px" }}>Page {page} of {totalPages}</span>
+          <button className="btn btn-sm btn-ghost" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+          <button className="btn btn-sm btn-ghost" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>Last</button>
+        </div>
+      )}
 
       {/* Lightbox modal */}
       {expandedUrl && (
@@ -236,7 +327,7 @@ function ScreenshotGallery({ employeeId }: { employeeId: string }) {
   );
 }
 
-function ScreenshotCard({ screenshot, imageUrl, onExpand }: { screenshot: any; imageUrl: string; onExpand: () => void }) {
+function ScreenshotCard({ screenshot, imageUrl, onExpand, onDelete, isDeleting }: { screenshot: any; imageUrl: string; onExpand: () => void; onDelete: () => void; isDeleting?: boolean }) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
 
@@ -280,12 +371,17 @@ function ScreenshotCard({ screenshot, imageUrl, onExpand }: { screenshot: any; i
           position: "absolute", inset: 0,
           background: "rgba(0,0,0,0.3)",
           opacity: 0, transition: "opacity 0.2s ease",
-          display: "flex", alignItems: "center", justifyContent: "center",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
           borderRadius: "var(--radius-md)",
         }}
           className="screenshot-hover-overlay"
         >
-          <ZoomIn size={20} style={{ color: "#fff" }} />
+          <button onClick={(e) => { e.stopPropagation(); onExpand(); }} style={{ background: "transparent", border: "none", cursor: "pointer" }}>
+            <ZoomIn size={20} style={{ color: "#fff" }} />
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ background: "transparent", border: "none", cursor: isDeleting ? "not-allowed" : "pointer" }} disabled={isDeleting}>
+            <Trash2 size={20} style={{ color: "var(--danger)" }} />
+          </button>
         </div>
       </div>
       <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{formatDate(screenshot.captured_at)}</div>
