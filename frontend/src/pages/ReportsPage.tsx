@@ -30,11 +30,11 @@ export function ReportsPage() {
 
       if (mode === "employee" && selectedEmployee) {
         blob = await reportsApi.downloadEmployeePDF(selectedEmployee, days);
-        const emp = employees.find(e => e.id === selectedEmployee);
-        filename = `pulsedesk_${emp?.full_name.replace(/\s/g, "_") ?? "report"}_${new Date().toISOString().split('T')[0]}.pdf`;
+        const emp = employees.find((employee) => employee.id === selectedEmployee);
+        filename = `pulsedesk_${emp?.full_name.replace(/\s/g, "_") ?? "report"}_${new Date().toISOString().split("T")[0]}.pdf`;
       } else {
         blob = await reportsApi.downloadTeamPDF(days, selectedDept || undefined);
-        filename = `pulsedesk_team_report_${new Date().toISOString().split('T')[0]}.pdf`;
+        filename = `pulsedesk_team_report_${new Date().toISOString().split("T")[0]}.pdf`;
       }
 
       const a = document.createElement("a");
@@ -71,9 +71,10 @@ export function ReportsPage() {
             ].map(({ id, label, icon, desc }) => (
               <div
                 key={id}
-                onClick={() => setMode(id as any)}
+                onClick={() => setMode(id as "employee" | "team")}
                 style={{
-                  flex: 1, padding: "var(--space-4)",
+                  flex: 1,
+                  padding: "var(--space-4)",
                   border: `1px solid ${mode === id ? "var(--accent)" : "var(--border-default)"}`,
                   borderRadius: "var(--radius-lg)",
                   cursor: "pointer",
@@ -103,8 +104,8 @@ export function ReportsPage() {
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <label>Employee</label>
                 <select className="input" value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)}>
-                  <option value="">Select employee…</option>
-                  {employees.map(e => <option key={e.id} value={e.id}>{e.full_name}</option>)}
+                  <option value="">Select employee...</option>
+                  {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
                 </select>
               </div>
             ) : (
@@ -112,7 +113,7 @@ export function ReportsPage() {
                 <label>Department (optional)</label>
                 <select className="input" value={selectedDept} onChange={(e) => setSelectedDept(e.target.value)}>
                   <option value="">All departments</option>
-                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
                 </select>
               </div>
             )}
@@ -125,7 +126,7 @@ export function ReportsPage() {
             style={{ display: "flex", alignItems: "center", gap: 8 }}
           >
             {generating
-              ? <><span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTop: "2px solid #fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} /> Generating PDF…</>
+              ? <><span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTop: "2px solid #fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} /> Generating PDF...</>
               : <><Download size={14} /> Download PDF report</>
             }
           </button>

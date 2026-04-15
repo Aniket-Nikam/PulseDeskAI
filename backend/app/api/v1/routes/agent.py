@@ -240,7 +240,9 @@ async def ingest_events(payload: ActivityBatch, db: AsyncSession = Depends(get_d
     # kills ALL anomaly inserts when any single check raises an exception.
     try:
         await check_anomalies(device, payload.events, db)
+        await db.commit()
     except Exception as e:
+        await db.rollback()
         log.warning(f"anomaly_check_error: {e}")
 
     # ── Trigger daily summary recompute in background ──────────────────────────

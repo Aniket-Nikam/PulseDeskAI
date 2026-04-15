@@ -50,7 +50,7 @@ python -m pip install --upgrade pip setuptools wheel --quiet
 REM Install core requirements
 python -m pip install -r requirements.txt --quiet
 if %errorlevel% equ 0 (
-    echo [OK] Core packages installed.
+echo [OK] Core packages installed.
 ) else (
     echo [ERROR] Failed to install core packages!
     pause
@@ -62,8 +62,29 @@ REM All capture modules are now in requirements.txt
 deactivate
 
 echo.
+echo Enabling agent auto-start on Windows login...
+call "%AGENT%ENABLE_AGENT_AUTOSTART.bat" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] Auto-start enabled.
+) else (
+    echo [WARN] Could not enable auto-start automatically.
+    echo Run ENABLE_AGENT_AUTOSTART.bat manually.
+)
+
+echo Starting agent in background now...
+call "%AGENT%START_AGENT_SILENT.bat" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] Agent started in background.
+) else (
+    echo [WARN] Agent did not start now.
+    echo You can run START_AGENT.bat manually.
+)
+
+echo.
 echo ================================================
 echo   Installation complete!
-echo   Double-click START_AGENT.bat to begin.
+echo   Auto-start is enabled.
+echo   The agent will start automatically at next login.
+echo   Run START_AGENT.bat now only if you want to start immediately.
 echo ================================================
 pause

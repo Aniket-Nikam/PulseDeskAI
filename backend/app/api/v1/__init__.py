@@ -1,10 +1,9 @@
 from fastapi import APIRouter
-from app.api.v1.routes import auth, employees, devices, agent, analytics, screenshots, ws, enrollment
+from app.api.v1.routes import auth, employees, devices, agent, analytics, screenshots, ws, enrollment, settings
 from app.api.v1.routes import reports
 from app.api.v1.routes.blocker import router as blocker_router
 from app.api.v1.routes.ai_insights import router as ai_router
 from app.api.v1.routes.actions import router as actions_router
-from app.api.v1.routes.settings import router as settings_router
 
 api_router = APIRouter()
 
@@ -20,4 +19,4 @@ api_router.include_router(blocker_router)
 api_router.include_router(ai_router)
 api_router.include_router(actions_router)
 api_router.include_router(enrollment.router)
-api_router.include_router(settings_router)
+api_router.include_router(settings.router)

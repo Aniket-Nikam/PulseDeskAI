@@ -23,6 +23,8 @@ export function AlertSystem() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAnomalyRef = useRef<{ key: string; at: number } | null>(null);
 
   // Request browser notification permission
   useEffect(() => {
@@ -56,19 +58,47 @@ export function AlertSystem() {
     } catch {}
   }
 
+  function clearDismissTimer() {
+    if (dismissTimerRef.current) {
+      clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+  }
+
+  function buildAlertId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
   const handleWsMessage = useCallback((msg: WsMessage) => {
     if (msg.type !== "anomaly") return;
 
+    const dedupeKey = `${msg.data.type}|${msg.data.description}`;
+    const now = Date.now();
+    if (lastAnomalyRef.current && lastAnomalyRef.current.key === dedupeKey && now - lastAnomalyRef.current.at < 4000) {
+      return;
+    }
+    lastAnomalyRef.current = { key: dedupeKey, at: now };
+
     const alert: Alert = {
-      id: Date.now().toString(),
+      id: buildAlertId(),
       type: msg.data.type,
       description: msg.data.description,
       timestamp: new Date().toISOString(),
     };
 
-    setAlerts((prev) => [alert, ...prev].slice(0, 10));
+    // Keep exactly one in-app anomaly toast visible at a time.
+    setAlerts([alert]);
     setUnreadCount((n) => n + 1);
     playAlertSound();
+
+    clearDismissTimer();
+    dismissTimerRef.current = setTimeout(() => {
+      setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
+      dismissTimerRef.current = null;
+    }, 10000);
 
     // Browser notification
     if (notificationsEnabled && Notification.permission === "granted") {
@@ -83,13 +113,17 @@ export function AlertSystem() {
   useWebSocket(handleWsMessage);
 
   function dismissAlert(id: string) {
+    clearDismissTimer();
     setAlerts((prev) => prev.filter((a) => a.id !== id));
   }
 
   function clearAll() {
+    clearDismissTimer();
     setAlerts([]);
     setUnreadCount(0);
   }
+
+  useEffect(() => () => clearDismissTimer(), []);
 
   return (
     <>
@@ -120,7 +154,7 @@ export function AlertSystem() {
         maxWidth: 360, width: "100%",
         pointerEvents: alerts.length ? "auto" : "none",
       }}>
-        {alerts.slice(0, 5).map((alert) => (
+        {alerts.slice(0, 1).map((alert) => (
           <div
             key={alert.id}
             style={{

@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle, Info, Shield, Clock, Zap, Globe, Settings, X, Save } from "lucide-react";
-import { analyticsApi, settingsApi } from "../api/client";
+import { analyticsApi, settingsApi, employeesApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
-import type { Anomaly } from "../types";
+import type { Anomaly, Employee } from "../types";
 import { formatDate } from "../utils/format";
 
 const ANOMALY_CONFIG: Record<string, {
@@ -65,10 +65,20 @@ export function AnomaliesPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("all");
   const [showSettings, setShowSettings] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState("");
+
+  const { data: employees = [] } = useQuery<Employee[]>({
+    queryKey: ["employees"],
+    queryFn: () => employeesApi.list({ is_active: true }),
+  });
 
   const { data: anomalies = [], isLoading } = useQuery<Anomaly[]>({
-    queryKey: ["anomalies", showReviewed],
-    queryFn: () => analyticsApi.anomalies(showReviewed ? {} : { is_reviewed: false }),
+    queryKey: ["anomalies", showReviewed, selectedEmployee],
+    queryFn: () =>
+      analyticsApi.anomalies({
+        ...(showReviewed ? {} : { is_reviewed: false }),
+        employee_id: selectedEmployee || undefined,
+      }),
     refetchInterval: 15_000,
   });
 
@@ -145,6 +155,21 @@ export function AnomaliesPage() {
             {label} {key !== "all" && counts[key] ? `(${counts[key]})` : ""}
           </button>
         ))}
+      </div>
+
+      <div style={{ marginBottom: 16, maxWidth: 340 }}>
+        <select
+          className="input"
+          value={selectedEmployee}
+          onChange={(event) => setSelectedEmployee(event.target.value)}
+        >
+          <option value="">All employees</option>
+          {employees.map((employee) => (
+            <option key={employee.id} value={employee.id}>
+              {employee.full_name}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* Anomaly list */}

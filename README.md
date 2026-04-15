@@ -1,55 +1,73 @@
-# PulseDesk — Employee Monitoring System v4
-Production-ready. All features working.
+# PulseDesk - Employee Monitoring System
+Production-ready. All core features are available.
 
 ## Quick Start (3 steps)
 
-### Step 1 — Create PostgreSQL database
+### Step 1 - Create PostgreSQL database
 ```sql
 CREATE DATABASE pulsedesk;
 ```
 
-### Step 2 — First time setup
-Double-click **SETUP_WINDOWS.bat**
-- When Notepad opens, change `YOUR_PASSWORD` to your PostgreSQL password
-- Configure `GROQ_API_KEY`, `SECRET_KEY`, and `DEVICE_TOKEN_SECRET`
-- Enter your admin email/password when prompted (used for first login)
-- Save and close → setup continues automatically
+### Step 2 - First time setup
+Double-click `SETUP_WINDOWS.bat`.
+- Update `YOUR_PASSWORD` with your PostgreSQL password.
+- Configure `GROQ_API_KEY`, `SECRET_KEY`, and `DEVICE_TOKEN_SECRET`.
+- Enter your admin email/password when prompted.
 
-### Step 3 — Run every time
-Double-click **START_WINDOWS.bat**
-→ Opens dashboard at http://localhost:5173
-→ Login with the admin credentials you entered during setup
+### Step 3 - Run every time
+Double-click `START_WINDOWS.bat`.
+- Dashboard: `http://localhost:5173`
+- API docs: `http://localhost:8000/api/docs`
 
----
+## Run Modes
 
-## Adding employees & monitoring
+### 1) Localhost (same PC)
+Use `START_WINDOWS.bat`. This is the default developer flow.
 
-1. **Employees** → **Add employee** → fill in name + email
-2. **Enroll device** → enter server URL → click Generate
-3. Copy the 6-digit code
-4. Employee visits `http://YOUR-LAN-IP:8000/join` in browser
-5. Enters code → clicks Download → extracts ZIP
-6. Runs `INSTALL_AGENT.bat` once → `START_AGENT.bat` every time
+### 2) Same Wi-Fi / LAN (different PC)
+Run frontend in LAN mode:
+```bash
+cd frontend
+npm run dev:lan
+```
+Then open `http://<SERVER_LAN_IP>:5173` from another PC on the same network.
 
----
+### 3) Different networks (internet test)
+Recommended for testing: expose frontend with a tunnel (ngrok or Cloudflare Tunnel).
 
-## Features
-- Live activity monitoring with real-time WebSocket updates
-- Workday timeline, hourly heatmap, app usage breakdown
-- Productivity scores computed from keyboard/mouse activity
-- Leaderboard with rankings and streaks
-- Anomaly detection: idle, distraction, after-hours, blocked sites
-- Website/domain blocking with violation alerts
-- Screenshot capture (create an interval policy in Screenshots page)
-- PDF reports per employee or team
-- Dark mode
+Example with ngrok:
+```bash
+ngrok http 5173
+```
+Use the generated HTTPS URL on any network. Since Vite proxies `/api` to backend, localhost testing still works unchanged on your main machine.
+
+One-click option (Windows):
+```bash
+START_WORLDWIDE_TEST.bat
+```
+This launches backend, frontend LAN mode, and ngrok together.
+
+If you expose backend directly (not through Vite proxy), update `backend/.env`:
+- `CORS_ORIGINS` must include your frontend public URL.
+- `TRUSTED_HOSTS` must include your backend host/domain.
+
+## Adding employees and monitoring
+1. Go to Employees and add an employee.
+2. Open Enroll Device, enter server URL, and generate a code.
+3. Share the code with the employee.
+4. Employee opens `<server-url>/join` in browser.
+5. Employee enters code and downloads the agent package.
+6. Employee runs `INSTALL_AGENT.bat` once, then `START_AGENT.bat` daily.
+
+Note: `INSTALL_AGENT.bat` now enables Windows login auto-start automatically.
+Manual controls:
+- Enable again: `agent/ENABLE_AGENT_AUTOSTART.bat`
+- Disable: `agent/DISABLE_AGENT_AUTOSTART.bat`
 
 ## URLs
-| URL | Purpose |
-|-----|---------|
-| http://localhost:5173 | Admin dashboard |
-| http://localhost:8000/join | Employee join portal |
-| http://localhost:8000/api/docs | API documentation |
+- `http://localhost:5173` - Admin dashboard
+- `http://localhost:8000/join` - Employee join portal
+- `http://localhost:8000/api/docs` - API documentation
 
 ## Credentials
 Use the admin email/password configured during `SETUP_WINDOWS.bat`.

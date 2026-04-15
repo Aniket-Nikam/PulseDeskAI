@@ -82,7 +82,7 @@ class ActionItemResponse(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("", response_model=ActionItemResponse)
+@router.post("/", response_model=ActionItemResponse)
 async def create_action_item(
     data: ActionItemCreate,
     admin=Depends(require_admin_write),
@@ -248,7 +248,7 @@ async def get_completion_stats(
         select(func.count(ActionItem.id)).where(
             and_(
                 ActionItem.employee_id == employee_id,
-                ActionItem.is_completed
+                ActionItem.is_completed == True
             )
         )
     )

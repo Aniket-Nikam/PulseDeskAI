@@ -6,9 +6,8 @@ Scoring consolidated into app.services.scoring.
 
 import uuid
 from datetime import datetime, date, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 from collections import defaultdict
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +19,11 @@ from app.models import (
     Employee, Department, Device, DeviceStatus, AnomalyLog, ActivityType,
 )
 from app.services.online_tracker import is_device_online, get_employee_last_event
+from app.services.categorizer import categorize_app, is_productive_category
 from app.services.scoring import compute_score_from_events
+from app.services import analytics_service
+from app.schemas import PaginatedResponse, AnomalyOut
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.audit import log_admin_action
 from app.api.v1.routes.auth import require_admin_read, require_admin_write
@@ -41,7 +44,7 @@ async def get_live_overview(
     result = await db.execute(
         select(Employee, Department.name.label("dept_name"))
         .outerjoin(Department, Employee.department_id == Department.id)
-        .where(Employee.is_active)
+        .where(Employee.is_active == True)
         .order_by(Employee.full_name)
     )
     rows = result.all()
@@ -131,7 +134,7 @@ async def get_leaderboard(
     emp_result = await db.execute(
         select(Employee, Department.name.label("dept_name"))
         .outerjoin(Department, Employee.department_id == Department.id)
-        .where(Employee.is_active)
+        .where(Employee.is_active == True)
     )
     employees = emp_result.all()
 
@@ -211,6 +214,7 @@ async def get_leaderboard(
 
 
 # ── Timeline ──────────────────────────────────────────────────────────────────
+from zoneinfo import ZoneInfo
 
 @router.get("/timeline/{employee_id}")
 async def get_timeline(
@@ -441,7 +445,7 @@ async def get_dept_comparison(
         emp_result = await db.execute(
             select(Employee).where(
                 Employee.department_id == dept.id,
-                Employee.is_active,
+                Employee.is_active == True,
             )
         )
         employees = emp_result.scalars().all()
@@ -522,7 +526,7 @@ async def get_anomalies(
         "employee_id": str(a.employee_id),
         "employee_name": name,
         "device_id": str(a.device_id),
-        "anomaly_type": a.anomaly_type,
+        "anomaly_type": a.anomaly_type.value if hasattr(a.anomaly_type, "value") else str(a.anomaly_type),
         "detected_at": a.detected_at.isoformat(),
         "description": a.description,
         "metadata": a.event_metadata,

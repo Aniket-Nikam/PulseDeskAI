@@ -129,7 +129,7 @@ class WorkSession(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id"), nullable=False, index=True)
-    device_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
@@ -150,7 +150,7 @@ class ActivityEvent(Base):
     __tablename__ = "activity_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    device_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True, index=True)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=False, index=True)
     employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id"), nullable=False, index=True)
     session_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("work_sessions.id"), index=True)
 
@@ -197,7 +197,7 @@ class AnomalyLog(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id"), nullable=False, index=True)
-    device_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=False)
     anomaly_type: Mapped[AnomalyType] = mapped_column(SAEnum(AnomalyType), nullable=False)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -249,7 +249,7 @@ class Screenshot(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id"), nullable=False, index=True)
-    device_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=False)
     policy_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("screenshot_policies.id"))
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -299,6 +299,19 @@ class DailySummary(Base):
     )
 
 
+class SystemSettings(Base):
+    __tablename__ = "system_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rapid_switching_high_threshold: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    rapid_switching_critical_threshold: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
+    rapid_switching_window_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    excessive_idle_threshold_minutes: Mapped[int] = mapped_column(Integer, default=45, nullable=False)
+    distraction_threshold_minutes: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    after_hours_min_active_minutes: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class ActionItem(Base):
     __tablename__ = "action_items"
 
@@ -317,16 +330,3 @@ class ActionItem(Base):
         Index("ix_action_items_employee_date", "employee_id", "created_at"),
         Index("ix_action_items_completion", "employee_id", "is_completed"),
     )
-
-class SystemSettings(Base):
-    __tablename__ = "system_settings"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    rapid_switching_high_threshold: Mapped[int] = mapped_column(Integer, default=4)
-    rapid_switching_critical_threshold: Mapped[int] = mapped_column(Integer, default=8)
-    rapid_switching_window_seconds: Mapped[int] = mapped_column(Integer, default=60)
-    excessive_idle_threshold_minutes: Mapped[int] = mapped_column(Integer, default=45)
-    distraction_threshold_minutes: Mapped[int] = mapped_column(Integer, default=5)
-    after_hours_min_active_minutes: Mapped[int] = mapped_column(Integer, default=5)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-

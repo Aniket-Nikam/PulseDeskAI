@@ -324,7 +324,7 @@ async def get_anomalies(
             employee_id=a.employee_id,
             employee_name=name,
             device_id=a.device_id,
-            anomaly_type=a.anomaly_type,
+            anomaly_type=a.anomaly_type.value if hasattr(a.anomaly_type, "value") else str(a.anomaly_type),
             detected_at=a.detected_at,
             description=a.description,
             metadata=a.event_metadata,

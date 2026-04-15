@@ -1,10 +1,54 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Camera, Shield, X, ZoomIn, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
-import { analyticsApi, employeesApi, screenshotsApi } from "../api/client";
+import { Camera, Shield, Trash2, X, ZoomIn } from "lucide-react";
+import { analyticsApi, employeesApi, api } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import type { Employee } from "../types";
 import { formatDate } from "../utils/format";
+
+const MIN_CARD_WIDTH = 220;
+const GRID_GAP = 10;
+const TARGET_ROWS = 3;
+
+type ScreenshotItem = {
+  id: string;
+  captured_at: string;
+  trigger: string;
+  file_size_bytes: number;
+  url: string;
+  file_exists?: boolean;
+};
+
+type ScreenshotPageResponse = {
+  items: ScreenshotItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
+type ScreenshotCleanupResponse = {
+  status: string;
+  removed: number;
+};
+
+type SortOrder = "desc" | "asc";
+type PolicyType = "disabled" | "interval" | "on_anomaly";
+
+type ScreenshotPolicy = {
+  id: string;
+  name: string;
+  policy_type: PolicyType;
+  interval_minutes: number | null;
+  applies_to_all: boolean;
+  is_active: boolean;
+};
+
+function getPolicyBadge(policy: ScreenshotPolicy): { label: string; className: string } {
+  if (!policy.is_active) return { label: "Inactive", className: "badge-gray" };
+  if (policy.policy_type === "disabled") return { label: "Disabled", className: "badge-gray" };
+  return { label: "Active", className: "badge-green" };
+}
 
 export function ScreenshotsPage() {
   const qc = useQueryClient();
@@ -17,7 +61,7 @@ export function ScreenshotsPage() {
     queryFn: () => employeesApi.list({ is_active: true }),
   });
 
-  const { data: policies = [] } = useQuery({
+  const { data: policies = [] } = useQuery<ScreenshotPolicy[]>({
     queryKey: ["policies"],
     queryFn: analyticsApi.screenshotPolicies,
   });
@@ -34,13 +78,24 @@ export function ScreenshotsPage() {
 
   const togglePolicy = useMutation({
     mutationFn: (id: string) => analyticsApi.togglePolicy(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["policies"] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["policies"] }); },
   });
 
   const deletePolicy = useMutation({
     mutationFn: (id: string) => analyticsApi.deletePolicy(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["policies"] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["policies"] }); },
   });
+
+  const handleTogglePolicy = (policy: ScreenshotPolicy) => {
+    const action = policy.is_active ? "disable" : "enable";
+    if (!window.confirm(`Are you sure you want to ${action} "${policy.name}"?`)) return;
+    togglePolicy.mutate(policy.id);
+  };
+
+  const handleDeletePolicy = (policy: ScreenshotPolicy) => {
+    if (!window.confirm(`Delete policy "${policy.name}"? This cannot be undone.`)) return;
+    deletePolicy.mutate(policy.id);
+  };
 
   return (
     <div style={{ padding: "var(--space-8)" }}>
@@ -100,14 +155,14 @@ export function ScreenshotsPage() {
           </label>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn-primary" onClick={() => createPolicy.mutate()} disabled={!policyForm.name || createPolicy.isPending}>
-              {createPolicy.isPending ? "Creating…" : "Create policy"}
+              {createPolicy.isPending ? "Creating..." : "Create policy"}
             </button>
             <button className="btn btn-ghost" onClick={() => setShowPolicyForm(false)}>Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Active policies */}
+      {/* Policies */}
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "var(--text-primary)" }}>Policies</h2>
         {policies.length === 0 ? (
@@ -118,43 +173,45 @@ export function ScreenshotsPage() {
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {policies.map((p: any) => (
-              <div key={p.id} className="card" style={{ padding: "var(--space-4) var(--space-5)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <Shield size={16} style={{ color: !p.is_active ? "var(--text-tertiary)" : "var(--accent)" }} />
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-                      {p.policy_type === "interval" ? `Every ${p.interval_minutes} minutes` : p.policy_type}
-                      {p.applies_to_all ? " · All employees" : ""}
+            {policies.map((p) => {
+              const badge = getPolicyBadge(p);
+              return (
+                <div key={p.id} className="card" style={{ padding: "var(--space-4) var(--space-5)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <Shield size={16} style={{ color: p.is_active && p.policy_type !== "disabled" ? "var(--accent)" : "var(--text-tertiary)" }} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                        {p.policy_type === "interval" ? `Every ${p.interval_minutes} minutes` : p.policy_type}
+                        {p.applies_to_all ? " - All employees" : ""}
+                      </div>
                     </div>
                   </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleTogglePolicy(p)}
+                      disabled={togglePolicy.isPending || deletePolicy.isPending}
+                      title={p.is_active ? "Disable policy" : "Enable policy"}
+                    >
+                      {p.is_active ? "Disable" : "Enable"}
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleDeletePolicy(p)}
+                      disabled={deletePolicy.isPending || togglePolicy.isPending}
+                      title="Delete policy"
+                      style={{ color: "var(--danger)" }}
+                    >
+                      <Trash2 size={14} /> Delete
+                    </button>
+                    <span className={`badge ${badge.className}`}>
+                      {badge.label}
+                    </span>
+                  </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span className={`badge ${!p.is_active ? "badge-gray" : "badge-green"}`}>
-                    {p.is_active ? "Active" : "Disabled"}
-                  </span>
-                  <button
-                    className={`btn btn-sm ${p.is_active ? "btn-secondary" : "btn-primary"}`}
-                    onClick={() => togglePolicy.mutate(p.id)}
-                    disabled={togglePolicy.isPending}
-                    title={p.is_active ? "Disable policy" : "Enable policy"}
-                    style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
-                  >
-                    {p.is_active ? <><ToggleRight size={14} /> Disable</> : <><ToggleLeft size={14} /> Enable</>}
-                  </button>
-                  <button
-                    className="btn btn-sm btn-ghost"
-                    onClick={() => { if (confirm(`Delete policy "${p.name}"?`)) deletePolicy.mutate(p.id); }}
-                    disabled={deletePolicy.isPending}
-                    title="Delete policy"
-                    style={{ color: "var(--danger)", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
-                  >
-                    <Trash2 size={14} /> Delete
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -164,7 +221,7 @@ export function ScreenshotsPage() {
         <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>View screenshots</h2>
           <select className="input" style={{ width: "auto" }} value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)}>
-            <option value="">Select employee…</option>
+            <option value="">Select employee...</option>
             {employees.map((e) => <option key={e.id} value={e.id}>{e.full_name}</option>)}
           </select>
         </div>
@@ -185,38 +242,153 @@ export function ScreenshotsPage() {
 function ScreenshotGallery({ employeeId }: { employeeId: string }) {
   const qc = useQueryClient();
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState("desc");
-  const [dateFilter, setDateFilter] = useState("");
-  const limit = 21;
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [columnCount, setColumnCount] = useState(6);
+  const pageSize = columnCount * TARGET_ROWS;
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["screenshots", employeeId, page, sort, dateFilter],
-    queryFn: () => {
-      let url = `/screenshots/${employeeId}?limit=${limit}&skip=${(page - 1) * limit}&sort=${sort}`;
-      if (dateFilter) url += `&date=${dateFilter}`;
-      return import("../api/client").then((m) => m.api.get(url)).then((r) => r.data);
+  useEffect(() => {
+    const node = gridRef.current;
+    if (!node) return;
+
+    const updateColumns = () => {
+      const width = node.clientWidth;
+      const cols = Math.max(1, Math.floor((width + GRID_GAP) / (MIN_CARD_WIDTH + GRID_GAP)));
+      setColumnCount((prev) => (prev === cols ? prev : cols));
+    };
+
+    updateColumns();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(updateColumns);
+      observer.observe(node);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener("resize", updateColumns);
+    return () => window.removeEventListener("resize", updateColumns);
+  }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [employeeId, selectedDate, sortOrder, pageSize]);
+
+  useEffect(() => {
+    setStatusMessage(null);
+  }, [employeeId]);
+
+  const { data, isLoading, isFetching } = useQuery<ScreenshotPageResponse>({
+    queryKey: ["screenshots", employeeId, selectedDate, sortOrder, page, pageSize],
+    queryFn: () =>
+      api.get(`/screenshots/${employeeId}`, {
+        params: {
+          limit: pageSize,
+          skip: (page - 1) * pageSize,
+          sort: sortOrder,
+          date: selectedDate || undefined,
+        },
+      }).then((r) => {
+        if (Array.isArray(r.data)) {
+          return {
+            items: r.data,
+            total: r.data.length,
+            page: 1,
+            page_size: r.data.length || pageSize,
+            pages: 1,
+          };
+        }
+        return {
+          items: r.data?.items ?? [],
+          total: r.data?.total ?? 0,
+          page: r.data?.page ?? page,
+          page_size: r.data?.page_size ?? pageSize,
+          pages: r.data?.pages ?? 1,
+        };
+      }),
+  });
+
+  const cleanupMissing = useMutation({
+    mutationFn: () => analyticsApi.cleanupMissingScreenshots() as Promise<ScreenshotCleanupResponse>,
+    onSuccess: (result) => {
+      const removed = result?.removed ?? 0;
+      setStatusMessage(`Cleanup complete: removed ${removed} missing screenshot record${removed === 1 ? "" : "s"}.`);
+      qc.invalidateQueries({ queryKey: ["screenshots", employeeId] });
     },
   });
 
   const deleteScreenshot = useMutation({
-    mutationFn: screenshotsApi.delete,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["screenshots", employeeId] }); }
+    mutationFn: (screenshotId: string) => analyticsApi.deleteScreenshot(screenshotId),
+    onSuccess: () => {
+      setStatusMessage("Screenshot deleted.");
+      qc.invalidateQueries({ queryKey: ["screenshots", employeeId] });
+    },
   });
 
-  const screenshots = data?.items || [];
-  const totalPages = data?.pages || 1;
-  const total = data?.total || 0;
+  const handleCleanupMissing = () => {
+    if (!window.confirm("Remove screenshot records whose image files are missing on disk?")) return;
+    cleanupMissing.mutate();
+  };
+
+  const handleDeleteScreenshot = (screenshot: ScreenshotItem) => {
+    if (!window.confirm("Delete this screenshot permanently? This cannot be undone.")) return;
+    deleteScreenshot.mutate(screenshot.id);
+  };
+
+  const screenshots = data?.items ?? [];
+  const currentPage = data?.page ?? 1;
+  const totalPages = Math.max(data?.pages ?? 1, 1);
+  const totalItems = data?.total ?? screenshots.length;
 
   if (isLoading) return <div className="skeleton" style={{ height: 160, borderRadius: "var(--radius-xl)" }} />;
 
-  if (screenshots.length === 0 && page === 1 && !dateFilter) {
+  if (screenshots.length === 0 && !isFetching) {
     return (
-      <div className="card empty-state" style={{ padding: "var(--space-8)" }}>
-        <div className="empty-state-icon"><Camera size={28} /></div>
-        <div className="empty-state-title">No screenshots</div>
-        <div className="empty-state-body">No screenshots captured for this employee yet.</div>
-      </div>
+      <>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+          <input
+            type="date"
+            className="input"
+            style={{ width: 180 }}
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+          />
+          <select
+            className="input"
+            style={{ width: 180 }}
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+          >
+            <option value="desc">Newest to Oldest</option>
+            <option value="asc">Oldest to Newest</option>
+          </select>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setSelectedDate("")}
+            disabled={!selectedDate || cleanupMissing.isPending}
+          >
+            Clear date
+          </button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={handleCleanupMissing}
+            disabled={cleanupMissing.isPending || isFetching}
+          >
+            {cleanupMissing.isPending ? "Cleaning..." : "Cleanup missing files"}
+          </button>
+        </div>
+        <div className="card empty-state" style={{ padding: "var(--space-8)" }}>
+          <div className="empty-state-icon"><Camera size={28} /></div>
+          <div className="empty-state-title">No screenshots</div>
+          <div className="empty-state-body">
+            {selectedDate
+              ? "No screenshots found for the selected date."
+              : "No screenshots captured for this employee yet."}
+          </div>
+        </div>
+      </>
     );
   }
 
@@ -224,70 +396,89 @@ function ScreenshotGallery({ employeeId }: { employeeId: string }) {
 
   return (
     <>
-      {/* Toolbar: date filter + count + sort + pagination */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input
             type="date"
             className="input"
-            style={{ width: "auto", padding: "4px 8px", fontSize: 12 }}
-            value={dateFilter}
-            onChange={(e) => { setDateFilter(e.target.value); setPage(1); }}
+            style={{ width: 180 }}
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
           />
-          {dateFilter && (
-            <button className="btn btn-sm btn-ghost" onClick={() => { setDateFilter(""); setPage(1); }} style={{ fontSize: 11 }}>
-              ✕ Clear date
-            </button>
-          )}
-          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-            {total} screenshot{total !== 1 ? "s" : ""} {dateFilter ? `on ${dateFilter}` : ""} · Page {page}/{totalPages}
-          </span>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select className="input" style={{ width: "auto", padding: "4px 8px", fontSize: 12 }} value={sort} onChange={(e) => { setSort(e.target.value); setPage(1); }}>
-            <option value="desc">Newest first</option>
-            <option value="asc">Oldest first</option>
+          <select
+            className="input"
+            style={{ width: 180 }}
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value as SortOrder)}
+          >
+            <option value="desc">Newest to Oldest</option>
+            <option value="asc">Oldest to Newest</option>
           </select>
-          <button className="btn btn-sm btn-ghost" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
-          <button className="btn btn-sm btn-ghost" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setSelectedDate("")}
+            disabled={!selectedDate || cleanupMissing.isPending}
+          >
+            Clear date
+          </button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={handleCleanupMissing}
+            disabled={cleanupMissing.isPending || isFetching}
+          >
+            {cleanupMissing.isPending ? "Cleaning..." : "Cleanup missing files"}
+          </button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
+            {totalItems} screenshot{totalItems !== 1 ? "s" : ""} - page {currentPage} of {totalPages}
+          </div>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={currentPage <= 1 || isFetching}
+          >
+            Prev
+          </button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={currentPage >= totalPages || isFetching}
+          >
+            Next
+          </button>
         </div>
       </div>
-
-      {/* No results for date filter */}
-      {screenshots.length === 0 && dateFilter && (
-        <div className="card empty-state" style={{ padding: "var(--space-6)" }}>
-          <div className="empty-state-icon"><Camera size={24} /></div>
-          <div className="empty-state-title">No screenshots for {dateFilter}</div>
-          <div className="empty-state-body">Try a different date or clear the filter.</div>
+      {statusMessage && (
+        <div
+          style={{
+            marginBottom: 10,
+            fontSize: 12,
+            color: "var(--text-secondary)",
+            background: "var(--bg-secondary)",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            padding: "8px 10px",
+          }}
+        >
+          {statusMessage}
         </div>
       )}
 
-      {/* Grid — flex layout so last-row items stretch to fill gaps */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-        {screenshots.map((s: any) => (
-          <div key={s.id} style={{ flex: "1 1 180px", maxWidth: "calc(100% / 3)", minWidth: 160 }}>
+      <div ref={gridRef}>
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`, gap: 10 }}>
+          {screenshots.map((s) => (
             <ScreenshotCard
+              key={s.id}
               screenshot={s}
               imageUrl={imageUrl(s.url)}
-              onExpand={() => setExpandedUrl(imageUrl(s.url))}
-              onDelete={() => { if (confirm("Delete this screenshot?")) deleteScreenshot.mutate(s.id); }}
+              onExpand={s.file_exists === false ? undefined : () => setExpandedUrl(imageUrl(s.url))}
+              onDelete={() => handleDeleteScreenshot(s)}
               isDeleting={deleteScreenshot.isPending && deleteScreenshot.variables === s.id}
             />
-          </div>
-        ))}
-      </div>
-
-      {/* Bottom pagination */}
-      {totalPages > 1 && (
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, marginTop: 16 }}>
-          <button className="btn btn-sm btn-ghost" disabled={page <= 1} onClick={() => setPage(1)}>First</button>
-          <button className="btn btn-sm btn-ghost" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
-          <span style={{ fontSize: 13, color: "var(--text-secondary)", padding: "0 8px" }}>Page {page} of {totalPages}</span>
-          <button className="btn btn-sm btn-ghost" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
-          <button className="btn btn-sm btn-ghost" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>Last</button>
+          ))}
         </div>
-      )}
-
+      </div>
       {/* Lightbox modal */}
       {expandedUrl && (
         <div
@@ -327,20 +518,32 @@ function ScreenshotGallery({ employeeId }: { employeeId: string }) {
   );
 }
 
-function ScreenshotCard({ screenshot, imageUrl, onExpand, onDelete, isDeleting }: { screenshot: any; imageUrl: string; onExpand: () => void; onDelete: () => void; isDeleting?: boolean }) {
+function ScreenshotCard({
+  screenshot,
+  imageUrl,
+  onExpand,
+  onDelete,
+  isDeleting,
+}: {
+  screenshot: ScreenshotItem;
+  imageUrl: string;
+  onExpand?: () => void;
+  onDelete: () => void;
+  isDeleting: boolean;
+}) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+  const canExpand = !error && !!onExpand;
+  const isMissingFile = screenshot.file_exists === false;
 
   return (
-    <div
-      className="card"
-      style={{ padding: "var(--space-3)", cursor: "pointer", position: "relative" }}
-      onClick={onExpand}
-    >
+    <div className="card screenshot-card" style={{ padding: "var(--space-3)", position: "relative" }}>
       <div style={{
-        height: 110, background: "var(--bg-secondary)", borderRadius: "var(--radius-md)",
+        aspectRatio: "16 / 9",
+        background: "var(--bg-secondary)", borderRadius: "var(--radius-md)",
         marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center",
         overflow: "hidden", position: "relative",
+        cursor: canExpand ? "zoom-in" : "default",
       }}>
         {!error ? (
           <>
@@ -352,6 +555,7 @@ function ScreenshotCard({ screenshot, imageUrl, onExpand, onDelete, isDeleting }
             <img
               src={imageUrl}
               alt={`Screenshot from ${formatDate(screenshot.captured_at)}`}
+              onClick={onExpand}
               onLoad={() => setLoaded(true)}
               onError={() => setError(true)}
               style={{
@@ -367,30 +571,83 @@ function ScreenshotCard({ screenshot, imageUrl, onExpand, onDelete, isDeleting }
         )}
 
         {/* Hover overlay with zoom icon */}
-        <div style={{
-          position: "absolute", inset: 0,
-          background: "rgba(0,0,0,0.3)",
-          opacity: 0, transition: "opacity 0.2s ease",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 12,
-          borderRadius: "var(--radius-md)",
-        }}
+        <div
+          style={{
+            position: "absolute", inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            opacity: 0, transition: "opacity 0.2s ease",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            borderRadius: "var(--radius-md)",
+          }}
           className="screenshot-hover-overlay"
         >
-          <button onClick={(e) => { e.stopPropagation(); onExpand(); }} style={{ background: "transparent", border: "none", cursor: "pointer" }}>
-            <ZoomIn size={20} style={{ color: "#fff" }} />
-          </button>
-          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ background: "transparent", border: "none", cursor: isDeleting ? "not-allowed" : "pointer" }} disabled={isDeleting}>
-            <Trash2 size={20} style={{ color: "var(--danger)" }} />
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {canExpand && (
+              <button
+                type="button"
+                title="Expand screenshot"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExpand?.();
+                }}
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: "999px",
+                  border: "1px solid rgba(255,255,255,0.45)",
+                  background: "rgba(255,255,255,0.16)",
+                  color: "#fff",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+              >
+                <ZoomIn size={18} />
+              </button>
+            )}
+            <button
+              type="button"
+              title={isDeleting ? "Deleting screenshot..." : "Delete screenshot"}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+              }}
+              disabled={isDeleting}
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: "999px",
+                border: "1px solid rgba(255,86,86,0.85)",
+                background: "rgba(255,86,86,0.22)",
+                color: "#fff",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: isDeleting ? "not-allowed" : "pointer",
+                opacity: isDeleting ? 0.6 : 1,
+              }}
+            >
+              <Trash2 size={18} />
+            </button>
+          </div>
         </div>
       </div>
-      <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{formatDate(screenshot.captured_at)}</div>
-      <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{screenshot.trigger} · {(screenshot.file_size_bytes / 1024).toFixed(0)}KB</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{formatDate(screenshot.captured_at)}</div>
+        <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {screenshot.trigger} - {(screenshot.file_size_bytes / 1024).toFixed(0)}KB
+        </div>
+        {isMissingFile && (
+          <div style={{ fontSize: 11, color: "var(--warning)" }}>File missing on disk</div>
+        )}
+      </div>
 
       <style>{`
-        .screenshot-hover-overlay { opacity: 0 !important; }
-        .card:hover .screenshot-hover-overlay { opacity: 1 !important; }
+        .screenshot-card .screenshot-hover-overlay { opacity: 0 !important; pointer-events: none; }
+        .screenshot-card:hover .screenshot-hover-overlay { opacity: 1 !important; pointer-events: auto; }
       `}</style>
     </div>
   );
 }
+

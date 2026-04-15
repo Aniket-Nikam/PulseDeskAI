@@ -1,6 +1,6 @@
 import axios from "axios";
 import { useAuthStore } from "../store/authStore";
-import { API_BASE_URL, APP_ORIGIN } from "../config";
+import { API_BASE_URL } from "../config";
 
 const BASE = API_BASE_URL;
 const API_ROOT = BASE.replace(/\/api\/v1\/?$/, "").replace(/\/$/, "");
@@ -88,11 +88,7 @@ export const devicesApi = {
     api.patch(`/devices/${id}/status`, { status: "approved" }).then((r) => r.data),
   revoke: (id: string) =>
     api.patch(`/devices/${id}/status`, { status: "revoked" }).then((r) => r.data),
-  delete: (id: string) => api.delete(`/devices/${id}`).then((r) => r.data),
-};
-
-export const screenshotsApi = {
-  delete: (id: string) => api.delete(`/screenshots/${id}`).then((r) => r.data),
+  delete: (id: string) => api.delete(`/devices/${id}`),
 };
 
 export const analyticsApi = {
@@ -131,6 +127,10 @@ export const analyticsApi = {
     api.patch(`/screenshot-policies/${id}/toggle`).then((r) => r.data),
   deletePolicy: (id: string) =>
     api.delete(`/screenshot-policies/${id}`).then((r) => r.data),
+  cleanupMissingScreenshots: () =>
+    api.delete("/screenshots/cleanup-missing").then((r) => r.data),
+  deleteScreenshot: (id: string) =>
+    api.delete(`/screenshots/${id}`).then((r) => r.data),
 };
 
 export const blockerApi = {
@@ -153,6 +153,11 @@ export const actionsApi = {
     api.get(`/actions/employee/${employeeId}/completion-stats`).then((r) => r.data),
 };
 
+export const settingsApi = {
+  get: () => api.get("/settings").then((r) => r.data),
+  update: (data: unknown) => api.put("/settings", data).then((r) => r.data),
+};
+
 export const reportsApi = {
   downloadEmployeePDF: async (employeeId: string, days: number = 7): Promise<Blob> => {
     const response = await api.get(`/reports/pdf/${employeeId}?days=${days}`, {
@@ -173,11 +178,6 @@ export const reportsApi = {
 export const enrollApi = {
   generateLink: (employeeId: string, serverUrl: string) =>
     api
-      .post(`/enroll/generate-join-link?employee_id=${employeeId}&server_url=${encodeURIComponent(serverUrl)}`)
+      .post(`${API_ROOT}/api/v1/enroll/generate-join-link?employee_id=${employeeId}&server_url=${encodeURIComponent(serverUrl)}`)
       .then((r) => r.data),
-};
-
-export const settingsApi = {
-  get: () => api.get("/settings").then((r) => r.data),
-  update: (data: Record<string, number>) => api.put("/settings", data).then((r) => r.data),
 };

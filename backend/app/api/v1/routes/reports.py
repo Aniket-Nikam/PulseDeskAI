@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.db.session import get_db
-from app.models import Employee, DailySummary, AnomalyLog, ActivityEvent
+from app.models import Employee, DailySummary, AnomalyLog, Department, ActivityEvent
 from app.api.v1.routes.auth import require_admin_read
 from app.core.logging import get_logger
 from app.core.files import sanitize_filename_component
@@ -41,7 +41,7 @@ async def generate_employee_pdf(
 ):
     """Generate a PDF productivity report for one employee."""
     try:
-        from fpdf import FPDF  # noqa: F401
+        from fpdf import FPDF
     except ImportError as e:
         log.error(f"fpdf2_import_failed: {e}")
         raise HTTPException(
@@ -133,12 +133,12 @@ async def generate_team_pdf(
 ):
     """Generate a team-wide PDF productivity report."""
     try:
-        from fpdf import FPDF  # noqa: F401
+        from fpdf import FPDF
     except ImportError:
         raise HTTPException(status_code=501, detail="Run: pip install fpdf2")
 
     try:
-        stmt = select(Employee).where(Employee.is_active)
+        stmt = select(Employee).where(Employee.is_active == True)
         if department_id:
             stmt = stmt.where(Employee.department_id == department_id)
         stmt = stmt.order_by(Employee.full_name)
@@ -206,29 +206,22 @@ async def generate_team_pdf(
 
 def _fmt_seconds(s: float) -> str:
     s = int(s)
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s//60}m"
+    if s < 60: return f"{s}s"
+    if s < 3600: return f"{s//60}m"
     return f"{s//3600}h {(s%3600)//60}m"
 
 
 def _score_color(score: float):
     """Return RGB tuple for the given productivity score."""
-    if score >= 75:
-        return (22, 163, 74)     # green-600
-    if score >= 50:
-        return (202, 138, 4)     # yellow-600
+    if score >= 75: return (22, 163, 74)     # green-600
+    if score >= 50: return (202, 138, 4)     # yellow-600
     return (220, 38, 38)                     # red-600
 
 
 def _score_label(score: float) -> str:
-    if score >= 80:
-        return "Excellent"
-    if score >= 65:
-        return "Good"
-    if score >= 50:
-        return "Average"
+    if score >= 80: return "Excellent"
+    if score >= 65: return "Good"
+    if score >= 50: return "Average"
     return "Needs Improvement"
 
 

@@ -256,7 +256,8 @@ WINDOWS SETUP:
    (Check "Add Python to PATH" during install)
 2. Open this folder
 3. Double-click: install_windows.bat
-4. After install, double-click: start_windows.bat
+4. After install, the agent starts automatically
+5. The agent will auto-start on every Windows login
 
 MAC/LINUX SETUP:
 1. Make sure Python 3.9+ is installed
@@ -275,9 +276,42 @@ All data is sent securely to your company's PulseDesk server.
 
     install_windows = """@echo off
 echo Installing PulseDesk dependencies...
+setlocal
+set "ROOT=%~dp0"
+cd /d "%ROOT%"
+
+where python >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [ERROR] Python is not on PATH. Install Python and retry.
+    pause
+    exit /b 1
+)
+
+python -m pip install --upgrade pip --quiet
 pip install -r requirements.txt
+if %errorlevel% neq 0 (
+    echo [ERROR] Dependency install failed.
+    pause
+    exit /b 1
+)
+
+set "STARTUP_DIR=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+if not exist "%STARTUP_DIR%" mkdir "%STARTUP_DIR%" >nul 2>&1
+set "VBS_FILE=%STARTUP_DIR%\\PulseDeskAgentAutostart.vbs"
+set "START_SCRIPT=%ROOT%start_windows.bat"
+
+(
+echo Set WshShell = CreateObject("WScript.Shell"^)
+echo WshShell.Run Chr(34^) ^& "%START_SCRIPT%" ^& Chr(34^), 0, False
+echo Set WshShell = Nothing
+) > "%VBS_FILE%"
+
+echo [OK] Auto-start configured for next login.
+echo Starting agent now...
+start "" /min "%START_SCRIPT%"
 echo.
-echo Installation complete! Run start_windows.bat to begin monitoring.
+echo Installation complete.
+echo The agent is now running and will start automatically on login.
 pause
 """
 
@@ -453,7 +487,7 @@ def _render_join_page() -> str:
       <div class="step">
         <div class="step-num">3</div>
         <div class="step-text">
-          <strong>Windows:</strong> Double-click <code>install_windows.bat</code> once, then <code>start_windows.bat</code><br>
+          <strong>Windows:</strong> Double-click <code>install_windows.bat</code> once (starts now + auto-start on login)<br>
           <strong>Mac:</strong> Open Terminal, run <code>bash install_mac.sh</code> then <code>bash start_mac.sh</code>
         </div>
       </div>

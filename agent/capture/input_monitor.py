@@ -58,18 +58,27 @@ class InputMonitor:
             import platform
             if platform.system() == "Windows":
                 try:
-                    import pynput._util.win32
-                    orig_convert = pynput._util.win32.Listener._convert
+                    import pynput._util.win32 as win32_util
+                    listener_cls = (
+                        getattr(win32_util, "Listener", None)
+                        or getattr(win32_util, "ListenerMixin", None)
+                    )
+                    if not listener_cls or not hasattr(listener_cls, "_convert"):
+                        raise AttributeError("No compatible win32 listener class found")
+
+                    orig_convert = listener_cls._convert
+
                     def safe_convert(self_obj, code, msg, lpdata):
                         try:
                             return orig_convert(self_obj, code, msg, lpdata)
                         except NotImplementedError:
                             # Ignore unknown Windows message types (like specific touchpad gestures)
                             # Return something safe that doesn't forward a bad type tuple
-                            pass
-                    pynput._util.win32.Listener._convert = safe_convert
+                            return None
+                    listener_cls._convert = safe_convert
                 except Exception as e:
-                    log.warning(f"Failed to apply win32 pynput patch: {e}")
+                    # This patch is optional and version-dependent; do not treat failures as warnings.
+                    log.debug(f"Skipped win32 pynput patch: {e}")
 
             self._keyboard_listener = keyboard.Listener(
                 on_press=self._on_key_press,

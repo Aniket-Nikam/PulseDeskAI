@@ -293,20 +293,37 @@ async def create_policy(
     admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
+    policy_kind = SnapshotPolicy(payload.policy_type)
+    is_enabled = policy_kind != SnapshotPolicy.disabled
+
+    # Keep at most one enabled policy at a time for predictable agent behavior.
+    if is_enabled:
+        active_result = await db.execute(
+            select(ScreenshotPolicy).where(ScreenshotPolicy.is_active)
+        )
+        for existing_policy in active_result.scalars().all():
+            existing_policy.is_active = False
+
     policy = ScreenshotPolicy(
         name=payload.name,
-        policy_type=SnapshotPolicy(payload.policy_type),
+        policy_type=policy_kind,
         interval_minutes=payload.interval_minutes,
         applies_to_all=payload.applies_to_all,
         department_id=payload.department_id,
         employee_id=payload.employee_id,
+        is_active=is_enabled,
         created_by=admin.id,
     )
     db.add(policy)
     await db.commit()
     await db.refresh(policy)
     log_admin_action("screenshot_policy_created", admin_id=str(admin.id), policy_id=str(policy.id))
-    return {"id": str(policy.id), "name": policy.name, "policy_type": policy.policy_type}
+    return {
+        "id": str(policy.id),
+        "name": policy.name,
+        "policy_type": policy.policy_type,
+        "is_active": policy.is_active,
+    }
 
 
 @router.get("/screenshot-policies", response_model=List[dict])
@@ -316,7 +333,6 @@ async def list_policies(
 ):
     result = await db.execute(
         select(ScreenshotPolicy)
-        .where(ScreenshotPolicy.is_active)
         .order_by(ScreenshotPolicy.created_at.desc())
     )
     policies = result.scalars().all()
@@ -346,7 +362,25 @@ async def toggle_policy(
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
         
-    policy.is_active = not policy.is_active
+    if policy.is_active:
+        # "Disable" should stop screenshot capture fully.
+        active_result = await db.execute(
+            select(ScreenshotPolicy).where(ScreenshotPolicy.is_active)
+        )
+        for existing_policy in active_result.scalars().all():
+            existing_policy.is_active = False
+    else:
+        # Re-enable selected policy and disable all others.
+        active_result = await db.execute(
+            select(ScreenshotPolicy).where(
+                ScreenshotPolicy.is_active,
+                ScreenshotPolicy.id != policy.id,
+            )
+        )
+        for existing_policy in active_result.scalars().all():
+            existing_policy.is_active = False
+        policy.is_active = True
+
     await db.commit()
     log_admin_action("screenshot_policy_toggled", admin_id=str(admin.id), policy_id=str(policy.id), new_status=policy.is_active)
     return {"id": str(policy.id), "is_active": policy.is_active}
@@ -379,15 +413,14 @@ async def check_screenshot_required(device_token: str, db: AsyncSession = Depend
     if not device:
         return {"required": False}
 
-    # Check for active interval policy
+    # Effective policy is the latest enabled policy.
     policy_result = await db.execute(
         select(ScreenshotPolicy).where(
-            ScreenshotPolicy.is_active,
-            ScreenshotPolicy.policy_type == SnapshotPolicy.interval,
-        ).limit(1)
+            ScreenshotPolicy.is_active
+        ).order_by(ScreenshotPolicy.created_at.desc()).limit(1)
     )
     policy = policy_result.scalar_one_or_none()
-    if not policy:
+    if not policy or policy.policy_type != SnapshotPolicy.interval:
         return {"required": False}
 
     # Check if enough time has passed since last screenshot

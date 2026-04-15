@@ -1,13 +1,33 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { UserPlus, Search, Trash2, UserX, UserCheck, Link2, X, Copy, Check } from "lucide-react";
+import { UserPlus, Search, Trash2, UserX, UserCheck, Link2, X, Copy, Check, Clock3 } from "lucide-react";
 import { employeesApi, departmentsApi, enrollApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import { OnlineBadge } from "../components/ui/OnlineBadge";
 import type { Employee, Department } from "../types";
 import { formatDate } from "../utils/format";
 import { api } from "../api/client";
-import { APP_ORIGIN } from "../config";
+import { BACKEND_ROOT } from "../config";
+
+function getDefaultEnrollServerUrl(): string {
+  if (typeof window === "undefined") return BACKEND_ROOT;
+  if (window.location.port === "5173") {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return BACKEND_ROOT;
+}
+
+function getServerReachabilityHint(value: string): string {
+  const url = (value || "").trim().toLowerCase();
+  if (!url) return "Use an absolute URL like https://your-domain.example or http://192.168.1.5:8000";
+  if (url.includes("localhost") || url.includes("127.0.0.1")) {
+    return "localhost works only on the same PC. For different networks, use a public HTTPS URL.";
+  }
+  if (url.includes("192.168.") || url.includes("10.") || url.includes("172.16.")) {
+    return "Private LAN IP works only on same Wi-Fi/VPN. For different networks, use a public HTTPS URL.";
+  }
+  return "Good: this looks like a shareable host. Verify this URL is reachable from the employee PC.";
+}
 
 export function EmployeesPage() {
   const qc = useQueryClient();
@@ -15,7 +35,16 @@ export function EmployeesPage() {
   const [showForm, setShowForm] = useState(false);
   const [enrollTarget, setEnrollTarget] = useState<Employee | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Employee | null>(null);
-  const [form, setForm] = useState({ email: "", full_name: "", job_title: "", department_id: "", timezone: "UTC" });
+  const [hoursTarget, setHoursTarget] = useState<Employee | null>(null);
+  const [form, setForm] = useState({
+    email: "",
+    full_name: "",
+    job_title: "",
+    department_id: "",
+    timezone: "UTC",
+    work_start_hour: "9",
+    work_end_hour: "18",
+  });
   const [formError, setFormError] = useState("");
 
   const { data: employees = [], isLoading } = useQuery<Employee[]>({
@@ -36,14 +65,51 @@ export function EmployeesPage() {
 
   const create = useMutation({
     mutationFn: (data: typeof form) =>
-      employeesApi.create({ ...data, department_id: data.department_id || undefined }),
+      employeesApi.create({
+        ...data,
+        department_id: data.department_id || undefined,
+        work_start_hour: Number(data.work_start_hour),
+        work_end_hour: Number(data.work_end_hour),
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["employees"] });
       setShowForm(false);
-      setForm({ email: "", full_name: "", job_title: "", department_id: "", timezone: "UTC" });
+      setForm({
+        email: "",
+        full_name: "",
+        job_title: "",
+        department_id: "",
+        timezone: "UTC",
+        work_start_hour: "9",
+        work_end_hour: "18",
+      });
       setFormError("");
     },
     onError: (err: any) => setFormError(err?.response?.data?.detail ?? "Failed to create employee"),
+  });
+
+  const updateWorkHours = useMutation({
+    mutationFn: ({
+      id,
+      timezone,
+      work_start_hour,
+      work_end_hour,
+    }: {
+      id: string;
+      timezone: string;
+      work_start_hour: number;
+      work_end_hour: number;
+    }) =>
+      employeesApi.update(id, {
+        timezone,
+        work_start_hour,
+        work_end_hour,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["employees"] });
+      qc.invalidateQueries({ queryKey: ["employees-inactive"] });
+      setHoursTarget(null);
+    },
   });
 
   const deactivate = useMutation({
@@ -75,7 +141,7 @@ export function EmployeesPage() {
     <div style={{ padding: "var(--space-8)" }}>
       <PageHeader
         title="Employees"
-        subtitle={`${employees.length} active${inactive.length > 0 ? ` · ${inactive.length} inactive` : ""}`}
+        subtitle={`${employees.length} active${inactive.length > 0 ? ` - ${inactive.length} inactive` : ""}`}
         action={
           <button className="btn btn-primary" onClick={() => setShowForm(true)}>
             <UserPlus size={14} /> Add employee
@@ -108,6 +174,38 @@ export function EmployeesPage() {
                 {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
             </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label>Timezone</label>
+              <input
+                type="text"
+                className="input"
+                placeholder="UTC"
+                value={form.timezone}
+                onChange={e => setForm(f => ({ ...f, timezone: e.target.value }))}
+              />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label>Work start hour (0-23)</label>
+              <input
+                type="number"
+                className="input"
+                min={0}
+                max={23}
+                value={form.work_start_hour}
+                onChange={e => setForm(f => ({ ...f, work_start_hour: e.target.value }))}
+              />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label>Work end hour (0-23)</label>
+              <input
+                type="number"
+                className="input"
+                min={0}
+                max={23}
+                value={form.work_end_hour}
+                onChange={e => setForm(f => ({ ...f, work_end_hour: e.target.value }))}
+              />
+            </div>
           </div>
           {formError && (
             <div style={{ padding: "8px 12px", background: "var(--danger-subtle)", color: "var(--danger)", borderRadius: "var(--radius-md)", fontSize: 13, marginBottom: 12 }}>
@@ -117,7 +215,7 @@ export function EmployeesPage() {
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn-primary" onClick={() => { setFormError(""); create.mutate(form); }}
               disabled={create.isPending || !form.email || !form.full_name}>
-              {create.isPending ? "Creating…" : "Create employee"}
+              {create.isPending ? "Creating..." : "Create employee"}
             </button>
             <button className="btn btn-ghost" onClick={() => { setShowForm(false); setFormError(""); }}>Cancel</button>
           </div>
@@ -126,7 +224,7 @@ export function EmployeesPage() {
 
       <div style={{ position: "relative", marginBottom: 16, maxWidth: 320 }}>
         <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-tertiary)" }} />
-        <input type="text" className="input" placeholder="Search employees…" value={search}
+        <input type="text" className="input" placeholder="Search employees..." value={search}
           onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 32 }} />
       </div>
 
@@ -139,7 +237,7 @@ export function EmployeesPage() {
           </div>
         ) : employees.length === 0 ? (
           <div className="empty-state">
-            <div className="empty-state-icon">👤</div>
+            <div className="empty-state-icon">ðŸ‘¤</div>
             <div className="empty-state-title">{search ? `No results for "${search}"` : "No employees yet"}</div>
             <div className="empty-state-body">Click "Add employee" to get started.</div>
           </div>
@@ -150,6 +248,7 @@ export function EmployeesPage() {
                 <th>Name</th>
                 <th>Department</th>
                 <th>Job title</th>
+                <th>Work hours</th>
                 <th>Devices</th>
                 <th>Status</th>
                 <th>Added</th>
@@ -163,8 +262,9 @@ export function EmployeesPage() {
                     <div style={{ fontWeight: 500 }}>{e.full_name}</div>
                     <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{e.email}</div>
                   </td>
-                  <td style={{ color: "var(--text-secondary)" }}>{e.department_name ?? "—"}</td>
-                  <td style={{ color: "var(--text-secondary)" }}>{e.job_title ?? "—"}</td>
+                  <td style={{ color: "var(--text-secondary)" }}>{e.department_name ?? "-"}</td>
+                  <td style={{ color: "var(--text-secondary)" }}>{e.job_title ?? "-"}</td>
+                  <td style={{ color: "var(--text-secondary)", fontSize: 12 }}>{`${e.work_start_hour}:00 - ${e.work_end_hour}:00 (${e.timezone})`}</td>
                   <td><span className="badge badge-gray">{e.device_count} device{e.device_count !== 1 ? "s" : ""}</span></td>
                   <td><OnlineBadge online={e.is_online} size="sm" /></td>
                   <td style={{ color: "var(--text-tertiary)", fontSize: 12 }}>{formatDate(e.created_at)}</td>
@@ -175,8 +275,11 @@ export function EmployeesPage() {
                       </button>
                       <button className="btn btn-sm btn-secondary"
                         onClick={() => { if (confirm(`Deactivate ${e.full_name}? Data is kept, they can rejoin later.`)) deactivate.mutate(e.id); }}
-                        title="Deactivate — keeps all data">
+                        title="Deactivate - keeps all data">
                         <UserX size={12} />
+                      </button>
+                      <button className="btn btn-sm btn-secondary" onClick={() => setHoursTarget(e)} title="Edit work hours">
+                        <Clock3 size={12} />
                       </button>
                       <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(e)} title="Delete permanently">
                         <Trash2 size={12} />
@@ -201,6 +304,7 @@ export function EmployeesPage() {
                 <tr>
                   <th>Name</th>
                   <th>Department</th>
+                  <th>Work hours</th>
                   <th>Added</th>
                   <th style={{ textAlign: "right" }}>Actions</th>
                 </tr>
@@ -212,12 +316,16 @@ export function EmployeesPage() {
                       <div style={{ fontWeight: 500, color: "var(--text-secondary)" }}>{e.full_name}</div>
                       <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{e.email}</div>
                     </td>
-                    <td style={{ color: "var(--text-tertiary)" }}>{e.department_name ?? "—"}</td>
+                    <td style={{ color: "var(--text-tertiary)" }}>{e.department_name ?? "-"}</td>
+                    <td style={{ color: "var(--text-tertiary)", fontSize: 12 }}>{`${e.work_start_hour}:00 - ${e.work_end_hour}:00 (${e.timezone})`}</td>
                     <td style={{ color: "var(--text-tertiary)", fontSize: 12 }}>{formatDate(e.created_at)}</td>
                     <td style={{ textAlign: "right" }}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                         <button className="btn btn-sm btn-secondary" onClick={() => reactivate.mutate(e.id)} title="Reactivate">
                           <UserCheck size={12} /> Reactivate
+                        </button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => setHoursTarget(e)} title="Edit work hours">
+                          <Clock3 size={12} />
                         </button>
                         <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(e)} title="Delete permanently">
                           <Trash2 size={12} />
@@ -233,6 +341,14 @@ export function EmployeesPage() {
       )}
 
       {enrollTarget && <EnrollModal employee={enrollTarget} onClose={() => setEnrollTarget(null)} />}
+      {hoursTarget && (
+        <WorkHoursModal
+          employee={hoursTarget}
+          loading={updateWorkHours.isPending}
+          onClose={() => setHoursTarget(null)}
+          onSave={(payload) => updateWorkHours.mutate({ id: hoursTarget.id, ...payload })}
+        />
+      )}
       {confirmDelete && (
         <DeleteModal employee={confirmDelete}
           onConfirm={() => hardDelete.mutate(confirmDelete.id)}
@@ -244,11 +360,12 @@ export function EmployeesPage() {
 }
 
 function EnrollModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
-  const [serverUrl, setServerUrl] = useState(APP_ORIGIN);
+  const [serverUrl, setServerUrl] = useState(getDefaultEnrollServerUrl);
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const reachabilityHint = getServerReachabilityHint(serverUrl);
 
   async function generate() {
     setLoading(true); setError("");
@@ -271,7 +388,7 @@ function EnrollModal({ employee, onClose }: { employee: Employee; onClose: () =>
       onClick={onClose}>
       <div className="card" style={{ width: "100%", maxWidth: 500, padding: "var(--space-6)" }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--text-primary)" }}>Enroll device — {employee.full_name}</h2>
+          <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--text-primary)" }}>Enroll device - {employee.full_name}</h2>
           <button className="btn btn-ghost btn-sm" onClick={onClose}><X size={14} /></button>
         </div>
 
@@ -284,13 +401,16 @@ function EnrollModal({ employee, onClose }: { employee: Employee; onClose: () =>
               <label>Server URL (reachable from employee's machine)</label>
               <input className="input" value={serverUrl} onChange={e => setServerUrl(e.target.value)} placeholder="http://192.168.1.5:8000" />
               <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>
-                Same machine: use <code>http://localhost:8000</code>. Another machine on same WiFi: use your LAN IP from <code>ipconfig</code>.
+                {reachabilityHint}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 2 }}>
+                Different networks example: <code>https://your-subdomain.ngrok-free.app</code>
               </div>
             </div>
             {error && <div style={{ padding: "8px 12px", background: "var(--danger-subtle)", color: "var(--danger)", borderRadius: "var(--radius-md)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
             <div style={{ display: "flex", gap: 8 }}>
               <button className="btn btn-primary" onClick={generate} disabled={loading}>
-                {loading ? "Generating…" : "Generate join code"}
+                {loading ? "Generating..." : "Generate join code"}
               </button>
               <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
             </div>
@@ -310,11 +430,11 @@ function EnrollModal({ employee, onClose }: { employee: Employee; onClose: () =>
                 Instructions for {employee.full_name}:
               </div>
               {[
-                `Step 1: Open this in your browser → ${result.join_url}`,
-                `Step 2: Enter code → ${result.code}`,
-                `Step 3: Click Download → Extract the ZIP file`,
+                `Step 1: Open this in your browser -> ${result.join_url}`,
+                `Step 2: Enter code -> ${result.code}`,
+                `Step 3: Click Download -> Extract the ZIP file`,
                 `Step 4: Double-click install_windows.bat (once only)`,
-                `Step 5: Double-click start_windows.bat — done!`,
+                `Step 5: Agent starts automatically and auto-runs on every login`,
               ].map((s, i) => (
                 <div key={i} style={{ padding: "7px 12px", background: "var(--bg-secondary)", borderRadius: "var(--radius-md)", fontSize: 12, color: "var(--text-secondary)" }}>
                   {s}
@@ -324,7 +444,7 @@ function EnrollModal({ employee, onClose }: { employee: Employee; onClose: () =>
 
             <div style={{ display: "flex", gap: 8 }}>
               <button className="btn btn-primary" onClick={() => copy(
-                `Hi ${employee.full_name},\n\nTo set up monitoring on your device:\n\n1. Open in browser: ${result.join_url}\n2. Enter code: ${result.code}\n3. Click Download → Extract ZIP\n4. Run install_windows.bat (once)\n5. Run start_windows.bat\n\nThat's all!`
+                `Hi ${employee.full_name},\n\nTo set up monitoring on your device:\n\n1. Open in browser: ${result.join_url}\n2. Enter code: ${result.code}\n3. Click Download -> Extract ZIP\n4. Run install_windows.bat (once)\n5. Agent will auto-start now and on every login\n\nThat's all!`
               )}>
                 {copied ? <><Check size={13} /> Copied!</> : <><Copy size={13} /> Copy to send</>}
               </button>
@@ -337,6 +457,90 @@ function EnrollModal({ employee, onClose }: { employee: Employee; onClose: () =>
   );
 }
 
+function WorkHoursModal({
+  employee,
+  onClose,
+  onSave,
+  loading,
+}: {
+  employee: Employee;
+  onClose: () => void;
+  onSave: (payload: { timezone: string; work_start_hour: number; work_end_hour: number }) => void;
+  loading: boolean;
+}) {
+  const [timezone, setTimezone] = useState(employee.timezone || "UTC");
+  const [workStartHour, setWorkStartHour] = useState(String(employee.work_start_hour ?? 9));
+  const [workEndHour, setWorkEndHour] = useState(String(employee.work_end_hour ?? 18));
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 1000,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+      onClick={onClose}
+    >
+      <div className="card" style={{ width: "100%", maxWidth: 460, padding: "var(--space-6)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--text-primary)" }}>
+            Work hours - {employee.full_name}
+          </h2>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}><X size={14} /></button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, gridColumn: "1 / -1" }}>
+            <label>Timezone</label>
+            <input className="input" value={timezone} onChange={e => setTimezone(e.target.value)} placeholder="UTC" />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label>Work start hour (0-23)</label>
+            <input
+              type="number"
+              className="input"
+              min={0}
+              max={23}
+              value={workStartHour}
+              onChange={e => setWorkStartHour(e.target.value)}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label>Work end hour (0-23)</label>
+            <input
+              type="number"
+              className="input"
+              min={0}
+              max={23}
+              value={workEndHour}
+              onChange={e => setWorkEndHour(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={() => onSave({
+              timezone: timezone || "UTC",
+              work_start_hour: Number(workStartHour),
+              work_end_hour: Number(workEndHour),
+            })}
+            disabled={loading}
+          >
+            {loading ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function DeleteModal({ employee, onConfirm, onClose, loading }: { employee: Employee; onConfirm: () => void; onClose: () => void; loading: boolean }) {
   const [typed, setTyped] = useState("");
   return (
@@ -350,7 +554,7 @@ function DeleteModal({ employee, onConfirm, onClose, loading }: { employee: Empl
           <div>
             <h2 style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>Delete permanently?</h2>
             <p style={{ fontSize: 13, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
-              All data for <strong>{employee.full_name}</strong> will be deleted — activity logs, sessions, screenshots. Cannot be undone.
+              All data for <strong>{employee.full_name}</strong> will be deleted - activity logs, sessions, screenshots. Cannot be undone.
             </p>
           </div>
         </div>
@@ -363,7 +567,7 @@ function DeleteModal({ employee, onConfirm, onClose, loading }: { employee: Empl
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn btn-danger" onClick={onConfirm} disabled={typed !== employee.full_name || loading}>
-            {loading ? "Deleting…" : "Delete permanently"}
+            {loading ? "Deleting..." : "Delete permanently"}
           </button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         </div>
@@ -371,3 +575,5 @@ function DeleteModal({ employee, onConfirm, onClose, loading }: { employee: Empl
     </div>
   );
 }
+
+
