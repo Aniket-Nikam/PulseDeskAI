@@ -3,6 +3,7 @@ PulseDesk Backend — FastAPI Application Entry Point
 """
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,9 +20,27 @@ from app.api.v1.routes.join_portal import router as join_portal_router
 
 setup_logging()
 log = get_logger("main")
+_ = settings.cookie_security_valid
 
 # Ensure screenshot directory exists
 os.makedirs(settings.SCREENSHOT_DIR, exist_ok=True)
+
+
+def _extract_origin(value: str) -> str:
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return value.rstrip("/")
+
+
+def _is_allowed_origin(value: str) -> bool:
+    origin = _extract_origin(value)
+    if not origin:
+        return False
+    allowed = set(settings.csrf_origin_allowlist)
+    return origin in allowed
 
 
 @asynccontextmanager
@@ -95,6 +114,20 @@ async def validation_handler(request: Request, exc: RequestValidationError):
             ],
         },
     )
+
+
+@app.middleware("http")
+async def csrf_guard_middleware(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/v1/"):
+        auth_header = request.headers.get("authorization", "").strip()
+        has_auth_cookie = bool(
+            request.cookies.get(settings.ACCESS_COOKIE_NAME) or request.cookies.get(settings.REFRESH_COOKIE_NAME)
+        )
+        if settings.require_origin_check_for_cookie_auth and has_auth_cookie and not auth_header:
+            origin = request.headers.get("origin") or request.headers.get("referer") or ""
+            if not _is_allowed_origin(origin):
+                return JSONResponse(status_code=403, content={"detail": "Cross-site request blocked"})
+    return await call_next(request)
 
 
 @app.middleware("http")

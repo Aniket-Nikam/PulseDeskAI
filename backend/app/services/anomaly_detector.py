@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Set
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, String
 
 from app.models import Device, AnomalyLog, AnomalyType, Employee
 from app.core.logging import get_logger
@@ -68,6 +68,19 @@ ANOMALY_META = {
         "severity": "medium",
     },
 }
+
+
+def _metadata_text(field_name: str):
+    """
+    Cross-version JSON text accessor for SQLAlchemy.
+    SQLAlchemy 2.x prefers ``as_string()``, while older versions expose ``astext``.
+    """
+    expr = AnomalyLog.event_metadata[field_name]
+    if hasattr(expr, "as_string"):
+        return expr.as_string()
+    if hasattr(expr, "astext"):
+        return expr.astext
+    return expr.cast(String)
 
 
 def _extract_domain_keyword(domain: str) -> str:
@@ -415,7 +428,7 @@ async def _check_distraction(device, events, employee_id, now, db):
             AnomalyLog.anomaly_type == AnomalyType.unusual_app_usage,
             AnomalyLog.detected_at >= cooldown_since,
             # Only count non-domain violations in this cooldown
-            AnomalyLog.event_metadata["violation_type"].astext != "blocked_domain",
+            _metadata_text("violation_type") != "blocked_domain",
         )
     )
     if (result.scalar() or 0) > 0:
@@ -486,7 +499,7 @@ async def _check_blocked_domains(device, events, employee_id, now, db):
             AnomalyLog.device_id == device.id,
             AnomalyLog.anomaly_type == AnomalyType.unusual_app_usage,
             AnomalyLog.detected_at >= since,
-            AnomalyLog.event_metadata["violation_type"].astext == "blocked_domain",
+            _metadata_text("violation_type") == "blocked_domain",
         )
     )
     if (result.scalar() or 0) > 0:

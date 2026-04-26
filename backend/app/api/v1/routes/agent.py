@@ -9,7 +9,7 @@ import platform as plat
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -27,6 +27,7 @@ from app.services.ws_broadcaster import broadcast_employee_update
 from app.services.scoring import compute_session_score
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.rate_limit import enforce_rate_limit
 
 router = APIRouter(tags=["agent"])
 log = get_logger("agent")
@@ -51,7 +52,18 @@ async def _get_approved_device(token: str, db: AsyncSession) -> Device:
 
 
 @router.post("/agent/heartbeat", response_model=HeartbeatOut)
-async def heartbeat(payload: HeartbeatIn, db: AsyncSession = Depends(get_db)):
+async def heartbeat(
+    payload: HeartbeatIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        key_prefix="agent_heartbeat",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        custom_identifier=payload.device_token,
+    )
     device = await _get_approved_device(payload.device_token, db)
     device.last_heartbeat = datetime.now(timezone.utc)
 
@@ -76,7 +88,18 @@ async def heartbeat(payload: HeartbeatIn, db: AsyncSession = Depends(get_db)):
 
 
 @router.patch("/agent/device-info")
-async def update_device_info(payload: DeviceInfoPatchRequest, db: AsyncSession = Depends(get_db)):
+async def update_device_info(
+    payload: DeviceInfoPatchRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        key_prefix="agent_device_info",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        custom_identifier=payload.device_token,
+    )
     token = payload.device_token
     result = await db.execute(select(Device).where(Device.device_token == token))
     device = result.scalar_one_or_none()
@@ -100,7 +123,18 @@ async def update_device_info(payload: DeviceInfoPatchRequest, db: AsyncSession =
 
 
 @router.post("/agent/session/start", response_model=dict)
-async def start_session(payload: SessionStart, db: AsyncSession = Depends(get_db)):
+async def start_session(
+    payload: SessionStart,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        key_prefix="agent_session_start",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        custom_identifier=payload.device_token,
+    )
     device = await _get_approved_device(payload.device_token, db)
 
     # Close any lingering open sessions
@@ -128,7 +162,18 @@ async def start_session(payload: SessionStart, db: AsyncSession = Depends(get_db
 
 
 @router.post("/agent/session/end", status_code=200)
-async def end_session(payload: SessionEnd, db: AsyncSession = Depends(get_db)):
+async def end_session(
+    payload: SessionEnd,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        key_prefix="agent_session_end",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        custom_identifier=payload.device_token,
+    )
     device = await _get_approved_device(payload.device_token, db)
     result = await db.execute(
         select(WorkSession).where(
@@ -148,7 +193,18 @@ async def end_session(payload: SessionEnd, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/agent/events", response_model=BatchResponse)
-async def ingest_events(payload: ActivityBatch, db: AsyncSession = Depends(get_db)):
+async def ingest_events(
+    payload: ActivityBatch,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        key_prefix="agent_events",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        custom_identifier=payload.device_token,
+    )
     if len(payload.events) > settings.BATCH_SIZE_LIMIT:
         raise HTTPException(status_code=400, detail=f"Batch too large (max {settings.BATCH_SIZE_LIMIT})")
 

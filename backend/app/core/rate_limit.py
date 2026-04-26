@@ -59,6 +59,7 @@ def enforce_rate_limit(
     limit: int,
     window_seconds: int = 60,
     include_auth_fingerprint: bool = False,
+    custom_identifier: str | None = None,
 ) -> None:
     parts = [key_prefix, _client_ip(request), request.url.path]
 
@@ -66,6 +67,8 @@ def enforce_rate_limit(
         auth = request.headers.get("authorization", "")
         if auth:
             parts.append(_anonymize(auth))
+    if custom_identifier:
+        parts.append(_anonymize(custom_identifier))
 
     allowed, retry_after = limiter.allow("|".join(parts), limit=limit, window_seconds=window_seconds)
     if not allowed:

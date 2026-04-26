@@ -40,6 +40,22 @@ def _safe_file_exists(file_path: str) -> bool:
         return False
 
 
+def _extract_device_token_from_request(request: Request, provided_token: str | None = None) -> str:
+    token = (provided_token or "").strip()
+    if token:
+        return token
+
+    header_token = (request.headers.get("x-device-token") or "").strip()
+    if header_token:
+        return header_token
+
+    auth_header = (request.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+
+    return ""
+
+
 @router.post("/agent/screenshot", status_code=201)
 async def upload_screenshot(
     request: Request,
@@ -55,6 +71,7 @@ async def upload_screenshot(
         limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
         window_seconds=60,
         include_auth_fingerprint=False,
+        custom_identifier=device_token,
     )
 
     result = await db.execute(select(Device).where(Device.device_token == device_token))
@@ -123,6 +140,7 @@ async def upload_screenshot(
 @router.get("/screenshots/{employee_id}", response_model=dict)
 async def list_screenshots(
     employee_id: uuid.UUID,
+    request: Request,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=21, ge=1, le=200),
     sort: str = Query(default="desc"),
@@ -132,6 +150,14 @@ async def list_screenshots(
 ):
     from sqlalchemy import func
     from datetime import datetime, timedelta
+
+    enforce_rate_limit(
+        request,
+        key_prefix="admin_screenshot_list",
+        limit=settings.RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        include_auth_fingerprint=True,
+    )
 
     base_filter = Screenshot.employee_id == employee_id
     filters = [base_filter]
@@ -170,13 +196,20 @@ async def list_screenshots(
         }
         for s in shots
     ]
-    return {
+    payload = {
         "items": items,
         "total": total,
         "page": (skip // limit) + 1,
         "page_size": limit,
         "pages": max((total + limit - 1) // limit, 1),
     }
+    log_admin_action(
+        "screenshot_list_viewed",
+        admin_id=str(admin.id),
+        employee_id=str(employee_id),
+        count=len(items),
+    )
+    return payload
 
 
 @router.get("/screenshots/view/{screenshot_id}")
@@ -201,6 +234,15 @@ async def view_screenshot(
             token = auth_header.split(" ", 1)[1].strip()
     if not token:
         token = request.cookies.get(settings.ACCESS_COOKIE_NAME)
+
+    enforce_rate_limit(
+        request,
+        key_prefix="admin_screenshot_view",
+        limit=settings.RATE_LIMIT_PER_MINUTE * 3,
+        window_seconds=60,
+        include_auth_fingerprint=True,
+        custom_identifier=token or None,
+    )
 
     # Validate token
     if not token:
@@ -231,16 +273,32 @@ async def view_screenshot(
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
+    log_admin_action(
+        "screenshot_viewed",
+        admin_id=str(admin.id),
+        screenshot_id=str(shot.id),
+        employee_id=str(shot.employee_id),
+    )
+
     media_type = "image/png" if filepath.suffix.lower() == ".png" else "image/jpeg"
     return FileResponse(str(filepath), media_type=media_type)
 
 
 @router.delete("/screenshots/cleanup-missing", status_code=200)
 async def cleanup_missing_screenshots(
+    request: Request,
     admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove all DB records whose files no longer exist on disk."""
+    enforce_rate_limit(
+        request,
+        key_prefix="admin_screenshot_cleanup",
+        limit=max(5, settings.RATE_LIMIT_PER_MINUTE // 4),
+        window_seconds=60,
+        include_auth_fingerprint=True,
+    )
+
     result = await db.execute(select(Screenshot))
     all_shots = result.scalars().all()
 
@@ -260,10 +318,19 @@ async def cleanup_missing_screenshots(
 @router.delete("/screenshots/{screenshot_id}", status_code=200)
 async def delete_screenshot(
     screenshot_id: uuid.UUID,
+    request: Request,
     admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a single screenshot (DB record + file on disk)."""
+    enforce_rate_limit(
+        request,
+        key_prefix="admin_screenshot_delete",
+        limit=settings.RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        include_auth_fingerprint=True,
+    )
+
     result = await db.execute(select(Screenshot).where(Screenshot.id == screenshot_id))
     shot = result.scalar_one_or_none()
     if not shot:
@@ -404,10 +471,26 @@ async def delete_policy(
 
 
 @router.get("/agent/screenshot-required")
-async def check_screenshot_required(device_token: str, db: AsyncSession = Depends(get_db)):
+async def check_screenshot_required(
+    request: Request,
+    device_token: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
     """Agent polls this to know if it should take a screenshot now."""
+    resolved_token = _extract_device_token_from_request(request, device_token)
+    if not resolved_token:
+        return {"required": False}
+
+    enforce_rate_limit(
+        request,
+        key_prefix="agent_screenshot_required",
+        limit=settings.AGENT_UPLOAD_RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+        custom_identifier=resolved_token,
+    )
+
     result = await db.execute(
-        select(Device).where(Device.device_token == device_token, Device.status == DeviceStatus.approved)
+        select(Device).where(Device.device_token == resolved_token, Device.status == DeviceStatus.approved)
     )
     device = result.scalar_one_or_none()
     if not device:

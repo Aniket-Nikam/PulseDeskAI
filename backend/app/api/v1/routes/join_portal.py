@@ -123,7 +123,13 @@ async def verify_join_code(request: Request, db: AsyncSession = Depends(get_db))
         window_seconds=60,
     )
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid request body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid request body")
+
     code = body.get("code", "").upper().strip()
 
     if not JOIN_CODE_RE.match(code):

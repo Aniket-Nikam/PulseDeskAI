@@ -505,7 +505,7 @@ async def get_dept_comparison(
 async def get_anomalies(
     is_reviewed: Optional[bool] = Query(default=None),
     employee_id: Optional[uuid.UUID] = Query(default=None),
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=200, le=1000),
     admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):

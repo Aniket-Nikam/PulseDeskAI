@@ -84,6 +84,7 @@ export function AlertSystem() {
 
     const alert: Alert = {
       id: buildAlertId(),
+      employee_name: msg.data.employee_name ?? undefined,
       type: msg.data.type,
       description: msg.data.description,
       timestamp: new Date().toISOString(),
@@ -171,7 +172,7 @@ export function AlertSystem() {
             <AlertTriangle size={16} style={{ color: "var(--danger)", flexShrink: 0, marginTop: 1 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-primary)", marginBottom: 2 }}>
-                {ANOMALY_LABELS[alert.type] ?? alert.type}
+                {alert.employee_name ? `${alert.employee_name} - ` : ""}{ANOMALY_LABELS[alert.type] ?? alert.type}
               </div>
               <div style={{ fontSize: 11, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {alert.description}

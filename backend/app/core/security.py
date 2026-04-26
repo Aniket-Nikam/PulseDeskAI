@@ -65,18 +65,13 @@ def create_refresh_token(data: dict) -> str:
 
 
 def decode_token(token: str) -> dict:
-    # Strict decode for newly-issued tokens.
-    try:
-        return jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
-            audience=settings.TOKEN_AUDIENCE,
-            issuer=settings.TOKEN_ISSUER,
-        )
-    except JWTError:
-        # Compatibility fallback for older tokens issued before issuer/audience claims.
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    return jwt.decode(
+        token,
+        settings.SECRET_KEY,
+        algorithms=[settings.ALGORITHM],
+        audience=settings.TOKEN_AUDIENCE,
+        issuer=settings.TOKEN_ISSUER,
+    )
 
 
 def generate_device_token(device_id: str, employee_id: str) -> str:

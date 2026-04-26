@@ -152,6 +152,24 @@ export interface Anomaly {
   is_reviewed: boolean;
 }
 
+export interface AnomalyRecommendationStats {
+  total_violations: number;
+  high_severity: number;
+  medium_severity: number;
+  low_severity: number;
+  reviewed: number;
+  unreviewed: number;
+}
+
+export interface AnomalyRecommendation {
+  employee_id: string;
+  employee_name: string;
+  recommendation: string;
+  source: "groq" | "heuristic";
+  stats: AnomalyRecommendationStats;
+  generated_at: string;
+}
+
 export interface ReportRow {
   employee_id: string;
   employee_name: string;
@@ -181,8 +199,10 @@ export interface WsAnomalyAlert {
   type: "anomaly";
   data: {
     employee_id: string;
+    employee_name?: string | null;
     type: string;
     description: string;
+    severity?: string;
   };
 }
 

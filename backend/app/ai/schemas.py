@@ -73,6 +73,24 @@ class WorkRecommendationsResponse(BaseModel):
     source: str  # groq | heuristic
 
 
+class AnomalyRecommendationStats(BaseModel):
+    total_violations: int
+    high_severity: int
+    medium_severity: int
+    low_severity: int
+    reviewed: int
+    unreviewed: int
+
+
+class AnomalyRecommendationResponse(BaseModel):
+    employee_id: str
+    employee_name: str
+    recommendation: str
+    source: str  # groq | heuristic
+    stats: AnomalyRecommendationStats
+    generated_at: datetime
+
+
 class AIDiagnosticsResponse(BaseModel):
     status: str
     total_active_employees: int

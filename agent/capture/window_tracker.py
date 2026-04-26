@@ -6,8 +6,20 @@ Supports: Windows, macOS, Linux (X11).
 
 import sys
 import logging
+import re
+from urllib.parse import urlparse
 
 log = logging.getLogger("window_tracker")
+
+BROWSER_PROCESSES = {
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "vivaldi.exe",
+    "chromium.exe",
+}
 
 
 def get_active_window() -> tuple[str | None, str | None]:
@@ -24,6 +36,96 @@ def get_active_window() -> tuple[str | None, str | None]:
     except Exception as e:
         log.debug(f"active_window_error: {e}")
         return None, None
+
+
+def get_active_browser_url() -> str | None:
+    """
+    Best-effort current URL capture for browsers.
+    Falls back silently when UI Automation is unavailable or the active app is not a browser.
+    """
+    try:
+        if sys.platform == "win32":
+            return _get_active_browser_url_windows()
+    except Exception as e:
+        log.debug(f"active_browser_url_error: {e}")
+    return None
+
+
+def _coerce_url_candidate(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    candidate = value.strip()
+    if not candidate or "\n" in candidate or len(candidate) > 2048:
+        return None
+
+    lower = candidate.lower()
+    if lower in {"search or enter address", "search google or type a url", "address and search bar"}:
+        return None
+
+    if " " in candidate and not lower.startswith(("http://", "https://")):
+        return None
+
+    if lower.startswith("www."):
+        candidate = f"https://{candidate}"
+    elif not lower.startswith(("http://", "https://")):
+        if not re.match(r"^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}([/:?#].*)?$", lower):
+            return None
+        candidate = f"https://{candidate}"
+
+    parsed = urlparse(candidate)
+    host = (parsed.netloc or "").lower().split("@")[-1].split(":")[0]
+    if "." not in host:
+        return None
+    return candidate
+
+
+def _get_active_browser_url_windows() -> str | None:
+    import ctypes
+    import ctypes.wintypes
+
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+
+    pid = ctypes.wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+
+    try:
+        import psutil
+        process_name = psutil.Process(pid.value).name().lower()
+    except Exception:
+        return None
+
+    if process_name not in BROWSER_PROCESSES:
+        return None
+
+    try:
+        from pywinauto import Desktop
+    except ImportError:
+        return None
+
+    try:
+        window = Desktop(backend="uia").window(handle=hwnd)
+        edits = window.descendants(control_type="Edit")
+    except Exception:
+        return None
+
+    for edit in edits:
+        value = None
+        try:
+            value = edit.get_value()
+        except Exception:
+            try:
+                value = edit.window_text()
+            except Exception:
+                value = None
+
+        url = _coerce_url_candidate(value)
+        if url:
+            return url
+
+    return None
 
 
 def _get_active_window_windows() -> tuple[str | None, str | None]:

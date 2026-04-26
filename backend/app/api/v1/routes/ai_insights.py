@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.schemas import (
     AIDiagnosticsResponse,
+    AnomalyRecommendationResponse,
     ChatRequest,
     ChatResponse,
     WorkRecommendationsResponse,
@@ -39,6 +40,15 @@ async def work_recommendations(
     admin=Depends(require_admin_read),
 ):
     return await ai_insights_service.work_recommendations(employee_id, db)
+
+
+@router.get("/anomaly-recommendation/{employee_id}", response_model=AnomalyRecommendationResponse)
+async def anomaly_recommendation(
+    employee_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin_read),
+):
+    return await ai_insights_service.anomaly_recommendation(employee_id, db)
 
 
 @router.get("/diagnostics/data-status", response_model=AIDiagnosticsResponse)

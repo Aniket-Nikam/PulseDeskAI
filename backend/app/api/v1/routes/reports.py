@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -19,6 +19,8 @@ from app.api.v1.routes.auth import require_admin_read
 from app.core.logging import get_logger
 from app.core.files import sanitize_filename_component
 from app.core.audit import log_admin_action
+from app.core.config import settings
+from app.core.rate_limit import enforce_rate_limit
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 log = get_logger("reports")
@@ -35,11 +37,20 @@ CONTENT_W = PAGE_W - MARGIN_LEFT - MARGIN_RIGHT
 @router.get("/pdf/{employee_id}")
 async def generate_employee_pdf(
     employee_id: uuid.UUID,
+    request: Request,
     days: int = Query(default=7, ge=1, le=30),
     admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a PDF productivity report for one employee."""
+    enforce_rate_limit(
+        request,
+        key_prefix="report_employee_pdf",
+        limit=max(6, settings.RATE_LIMIT_PER_MINUTE // 3),
+        window_seconds=60,
+        include_auth_fingerprint=True,
+    )
+
     try:
         from fpdf import FPDF
     except ImportError as e:
@@ -126,12 +137,21 @@ async def generate_employee_pdf(
 
 @router.get("/pdf/team/all")
 async def generate_team_pdf(
+    request: Request,
     days: int = Query(default=7, ge=1, le=30),
     department_id: Optional[uuid.UUID] = Query(None),
     admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a team-wide PDF productivity report."""
+    enforce_rate_limit(
+        request,
+        key_prefix="report_team_pdf",
+        limit=max(4, settings.RATE_LIMIT_PER_MINUTE // 4),
+        window_seconds=60,
+        include_auth_fingerprint=True,
+    )
+
     try:
         from fpdf import FPDF
     except ImportError:

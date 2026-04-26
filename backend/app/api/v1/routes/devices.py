@@ -106,5 +106,4 @@ async def delete_device(
     db: AsyncSession = Depends(get_db),
 ):
     await device_service.delete_device(device_id, db)
-    log_admin_action("device_revoked", admin_id=str(admin.id), device_id=str(device_id))
-
+    log_admin_action("device_deleted", admin_id=str(admin.id), device_id=str(device_id))

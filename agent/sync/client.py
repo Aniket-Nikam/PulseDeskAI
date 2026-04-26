@@ -1,7 +1,9 @@
 import logging
+import re
 import time
 import threading
 from typing import Optional, List
+from urllib.parse import urlparse
 import requests
 from requests.exceptions import RequestException
 
@@ -10,6 +12,56 @@ from sync.queue import OfflineSyncQueue
 
 log = logging.getLogger("api_client")
 TIMEOUT = 15
+
+
+DOMAIN_ALIASES = {
+    "youtube.com": {"youtu.be", "youtube"},
+    "youtu.be": {"youtube.com", "youtube"},
+    "twitter.com": {"x.com", "twitter"},
+    "x.com": {"twitter.com", "twitter"},
+}
+
+
+def _normalize_domain(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    normalized = normalized.replace("https://", "").replace("http://", "").replace("www.", "")
+    return normalized.split("/", 1)[0].split(":", 1)[0]
+
+
+def _extract_host(value: str) -> Optional[str]:
+    candidate = (value or "").strip().lower()
+    if not candidate:
+        return None
+    if candidate.startswith("www."):
+        candidate = f"https://{candidate}"
+    elif not candidate.startswith(("http://", "https://")):
+        candidate = f"https://{candidate}"
+
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return None
+
+    host = (parsed.netloc or "").split("@")[-1].split(":")[0]
+    if "." not in host:
+        return None
+    return host.removeprefix("www.")
+
+
+def _extract_hosts_from_text(value: str) -> set[str]:
+    hosts: set[str] = set()
+    text = (value or "").lower()
+    for match in re.findall(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[^\s]*)?", text):
+        host = _extract_host(match)
+        if host:
+            hosts.add(host)
+    return hosts
+
+
+def _host_matches(domain: str, host: str) -> bool:
+    domain = _normalize_domain(domain)
+    host = _normalize_domain(host)
+    return host == domain or host.endswith(f".{domain}")
 
 class PulseDeskClient:
     def __init__(self, queue: OfflineSyncQueue):
@@ -51,11 +103,18 @@ class PulseDeskClient:
     def blocklist(self) -> List[str]:
         return self._blocklist
 
-    def _post(self, path: str, json: dict = None, data: dict = None, files: dict = None):
+    def _post(
+        self,
+        path: str,
+        json: dict = None,
+        data: dict = None,
+        files: dict = None,
+        headers: dict | None = None,
+    ):
         """Unified internal post utilizing session with robust failure boundaries."""
         url = f"{self.base_url}{path}"
         try:
-            r = self.session.post(url, json=json, data=data, files=files, timeout=TIMEOUT)
+            r = self.session.post(url, json=json, data=data, files=files, headers=headers, timeout=TIMEOUT)
             r.raise_for_status()
             self._is_online = True
             return r
@@ -63,10 +122,10 @@ class PulseDeskClient:
             self._is_online = False
             raise e
 
-    def _get(self, path: str, params: dict = None):
+    def _get(self, path: str, params: dict = None, headers: dict | None = None):
         url = f"{self.base_url}{path}"
         try:
-            r = self.session.get(url, params=params, timeout=TIMEOUT)
+            r = self.session.get(url, params=params, headers=headers, timeout=TIMEOUT)
             r.raise_for_status()
             self._is_online = True
             return r
@@ -75,11 +134,16 @@ class PulseDeskClient:
             raise e
 
     def sync_blocklist(self):
+        if not self.device_token:
+            return
         now = time.monotonic()
         if now - self._blocklist_last_sync < 300:
             return
         try:
-            resp = self._get("/api/v1/blocker/domains/active-list")
+            resp = self._get(
+                "/api/v1/blocker/domains/active-list",
+                headers={"X-Device-Token": self.device_token},
+            )
             data = resp.json()
             self._blocklist = data.get("domains", [])
             self._blocklist_last_sync = now
@@ -88,7 +152,12 @@ class PulseDeskClient:
         except RequestException:
             pass
 
-    def check_window_against_blocklist(self, app_name: Optional[str], window_title: Optional[str]) -> List[str]:
+    def check_window_against_blocklist(
+        self,
+        app_name: Optional[str],
+        window_title: Optional[str],
+        current_url: Optional[str] = None,
+    ) -> List[str]:
         """
         Check current active window against local blocklist.
         Returns a list of matched domain strings if violations are detected, else an empty list.
@@ -103,20 +172,27 @@ class PulseDeskClient:
 
         app_lower = (app_name or "").lower()
         title_lower = (window_title or "").lower()
+        url_lower = (current_url or "").lower()
 
-        if not app_lower and not title_lower:
+        if not app_lower and not title_lower and not url_lower:
             return []
 
+        hosts = _extract_hosts_from_text(url_lower) | _extract_hosts_from_text(title_lower)
         found_domains = []
         for domain in self._blocklist:
-            domain_lower = domain.lower()
+            domain_lower = _normalize_domain(domain)
             keyword = domain_lower.split(".")[0]
+            aliases = DOMAIN_ALIASES.get(domain_lower, set())
 
-            if domain_lower in title_lower:
+            if any(_host_matches(domain_lower, host) for host in hosts):
                 found_domains.append(domain)
-            elif keyword and keyword in app_lower:
+            elif domain_lower in title_lower or domain_lower in url_lower:
                 found_domains.append(domain)
-            elif keyword and keyword in title_lower:
+            elif any(alias in url_lower for alias in aliases):
+                found_domains.append(domain)
+            elif keyword and len(keyword) >= 3 and (keyword in app_lower or keyword in title_lower):
+                found_domains.append(domain)
+            elif any(alias in app_lower or alias in title_lower for alias in aliases):
                 found_domains.append(domain)
 
         return list(set(found_domains))
@@ -126,7 +202,13 @@ class PulseDeskClient:
         self._blocklist_last_sync = 0.0  # Reset throttle
         self.sync_blocklist()
 
-    def report_violation(self, domain: str, window_title: str, app_name: str) -> bool:
+    def report_violation(
+        self,
+        domain: str,
+        window_title: str,
+        app_name: str,
+        current_url: Optional[str] = None,
+    ) -> bool:
         """
         Report a blocked domain violation to the backend.
         Returns True if the backend requests an immediate screenshot (violation trigger).
@@ -142,6 +224,7 @@ class PulseDeskClient:
                     "domain": domain,
                     "window_title": window_title or "",
                     "app_name": app_name or "",
+                    "current_url": current_url or "",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -156,7 +239,10 @@ class PulseDeskClient:
         if not self.device_token:
             return False
         try:
-            resp = self._get("/api/v1/agent/screenshot-required", params={"device_token": self.device_token})
+            resp = self._get(
+                "/api/v1/agent/screenshot-required",
+                headers={"X-Device-Token": self.device_token},
+            )
             return resp.json().get("required", False)
         except RequestException:
             return False

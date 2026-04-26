@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # AI
     AI_ENABLED: bool = True
     GROQ_API_KEY: str = ""
+    GROQ_PRIMARY_MODEL: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
     AI_REQUEST_TIMEOUT_SECONDS: int = 20
     AI_SCREENSHOT_ANALYSIS_ENABLED: bool = False
@@ -122,9 +123,18 @@ class Settings(BaseSettings):
             raise ValueError("COOKIE_SAMESITE must be one of: lax, strict, none")
         return normalized
 
+    @field_validator("GROQ_MODEL", mode="after")
+    @classmethod
+    def resolve_groq_model(cls, value: str, info) -> str:
+        primary = (info.data.get("GROQ_PRIMARY_MODEL") or "").strip()
+        return primary or value
+
     @property
     def cors_origins_list(self) -> list[str]:
-        return self._parse_json_list(self.CORS_ORIGINS, ["http://localhost:5173"])
+        origins = self._parse_json_list(self.CORS_ORIGINS, ["http://localhost:5173"])
+        if "*" in origins:
+            raise ValueError("CORS_ORIGINS must not contain '*' when credentials are enabled")
+        return origins
 
     @property
     def cors_allow_methods_list(self) -> list[str]:
@@ -137,6 +147,20 @@ class Settings(BaseSettings):
     @property
     def trusted_hosts_list(self) -> list[str]:
         return self._parse_json_list(self.TRUSTED_HOSTS, ["localhost", "127.0.0.1"])
+
+    @property
+    def csrf_origin_allowlist(self) -> list[str]:
+        return [origin.rstrip("/") for origin in self.cors_origins_list]
+
+    @property
+    def require_origin_check_for_cookie_auth(self) -> bool:
+        return True
+
+    @property
+    def cookie_security_valid(self) -> bool:
+        if self.COOKIE_SAMESITE == "none" and not self.COOKIE_SECURE:
+            raise ValueError("COOKIE_SECURE must be true when COOKIE_SAMESITE is 'none'")
+        return True
 
 
 settings = Settings()

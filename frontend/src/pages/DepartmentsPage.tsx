@@ -33,6 +33,23 @@ export function DepartmentsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["departments"] }),
   });
 
+  const comparisonChartData = comparison.map((d) => {
+    const scoreRaw = Number(d.avg_productivity_score);
+    const activeRaw = Number(d.avg_active_seconds);
+    const score = Number.isFinite(scoreRaw) ? Math.max(0, Math.min(100, Math.round(scoreRaw))) : 0;
+    const activeHours = Number.isFinite(activeRaw) ? Math.max(0, Math.round((activeRaw / 3600) * 10) / 10) : 0;
+    const noActivity = score === 0 && activeHours === 0;
+    return {
+      name: d.department_name,
+      score,
+      active: activeHours,
+      noActivity,
+      employeeCount: d.employee_count,
+      color: productivityColor(score),
+    };
+  });
+  const hasMeaningfulComparison = comparisonChartData.some((d) => d.score > 0 || d.active > 0);
+
   return (
     <div style={{ padding: "var(--space-8)" }}>
       <PageHeader
@@ -107,35 +124,57 @@ export function DepartmentsPage() {
       </div>
 
       {/* Comparison chart */}
-      {comparison.length > 0 && (
+      {departments.length > 0 && (
         <section className="card" style={{ padding: "var(--space-6)" }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: "var(--text-primary)" }}>
             Today's department comparison
           </h2>
-          <div style={{ height: 200 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={comparison.map((d) => ({
-                  name: d.department_name,
-                  score: Math.round(d.avg_productivity_score),
-                  active: Math.round(d.avg_active_seconds / 3600 * 10) / 10,
-                }))}
-                margin={{ top: 4, right: 4, bottom: 4, left: -20 }}
-              >
-                <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--text-secondary)" }} tickLine={false} axisLine={false} />
-                <YAxis tick={{ fontSize: 10, fill: "var(--text-tertiary)" }} tickLine={false} axisLine={false} domain={[0, 100]} />
-                <Tooltip
-                  contentStyle={{ background: "var(--bg-primary)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)", fontSize: 12, boxShadow: "var(--shadow-md)" }}
-                  formatter={(v: number) => [`${v}%`, "Avg productivity"]}
-                />
-                <Bar dataKey="score" radius={[4, 4, 0, 0]}>
-                  {comparison.map((d, i) => (
-                    <Cell key={i} fill={productivityColor(d.avg_productivity_score)} fillOpacity={0.8} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          {hasMeaningfulComparison ? (
+            <>
+              <div style={{ height: 200 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={comparisonChartData}
+                    margin={{ top: 4, right: 4, bottom: 4, left: -20 }}
+                  >
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: "var(--text-secondary)" }} tickLine={false} axisLine={false} />
+                    <YAxis tick={{ fontSize: 10, fill: "var(--text-tertiary)" }} tickLine={false} axisLine={false} domain={[0, 100]} />
+                    <Tooltip
+                      contentStyle={{ background: "var(--bg-primary)", border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)", fontSize: 12, boxShadow: "var(--shadow-md)" }}
+                      formatter={(v: number, _name, item: { payload?: { noActivity?: boolean; employeeCount?: number } }) => {
+                        const noActivity = Boolean(item?.payload?.noActivity);
+                        const employeeCount = Number(item?.payload?.employeeCount ?? 0);
+                        if (noActivity) {
+                          return [employeeCount > 0 ? "No tracked activity yet" : "No employees in department", "Status"];
+                        }
+                        return [`${v}%`, "Avg productivity"];
+                      }}
+                    />
+                    <Bar dataKey="score" radius={[4, 4, 0, 0]} minPointSize={6}>
+                      {comparisonChartData.map((d, i) => (
+                        <Cell
+                          key={i}
+                          fill={d.noActivity ? "var(--border-default)" : d.color}
+                          fillOpacity={d.noActivity ? 0.75 : 0.85}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-tertiary)" }}>
+                Gray bars indicate departments with no tracked activity for today.
+              </div>
+            </>
+          ) : (
+            <div className="empty-state" style={{ minHeight: 200 }}>
+              <div className="empty-state-icon"><Building2 size={28} /></div>
+              <div className="empty-state-title">Not enough activity data yet</div>
+              <div className="empty-state-body">
+                Comparison will appear after departments start generating tracked work data.
+              </div>
+            </div>
+          )}
         </section>
       )}
     </div>

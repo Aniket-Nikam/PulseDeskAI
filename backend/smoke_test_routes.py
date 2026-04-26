@@ -222,11 +222,16 @@ class SmokeRunner:
             self._request("GET", f"{self.api_base}/ai/diagnostics/data-status", token=self.access_token),
             200,
         )
-        self._expect_status(
-            "GET /api/v1/ai/burnout-risks",
-            self._request("GET", f"{self.api_base}/ai/burnout-risks", token=self.access_token),
-            200,
-        )
+        if self.first_employee_id:
+            self._expect_status(
+                f"GET /api/v1/ai/work-recommendations/{self.first_employee_id}",
+                self._request(
+                    "GET",
+                    f"{self.api_base}/ai/work-recommendations/{self.first_employee_id}",
+                    token=self.access_token,
+                ),
+                200,
+            )
 
     def test_reports(self) -> None:
         if not self.access_token:
@@ -261,31 +266,36 @@ class SmokeRunner:
             {"employee_id": self.first_employee_id, "server_url": self.base_url}
         )
 
-        root_enroll = self._request(
+        join_link_api = self._request(
             "POST",
-            f"{self.base_url}/enroll/generate-link?{query}",
+            f"{self.api_base}/enroll/generate-join-link?{query}",
             token=self.access_token,
         )
-        root_ok = self._expect_status("POST /enroll/generate-link", root_enroll, 200)
+        join_link_ok = self._expect_status(
+            "POST /api/v1/enroll/generate-join-link",
+            join_link_api,
+            200,
+        )
 
-        api_enroll = self._request(
+        # Keep legacy token enrollment covered as a secondary path.
+        legacy_enroll = self._request(
             "POST",
             f"{self.api_base}/enroll/generate-link?{query}",
             token=self.access_token,
         )
-        self._expect_status("POST /api/v1/enroll/generate-link", api_enroll, 200)
+        self._expect_status("POST /api/v1/enroll/generate-link", legacy_enroll, 200)
 
-        if not root_ok or not self.exercise_join:
+        if not join_link_ok or not self.exercise_join:
             return
 
         try:
-            payload = root_enroll.json() or {}
+            payload = join_link_api.json() or {}
             code = payload.get("code")
             if not code:
-                self._assert("enroll root returned code", False, str(payload))
+                self._assert("join-link API returned code", False, str(payload))
                 return
         except Exception as e:
-            self._assert("enroll root parse", False, str(e))
+            self._assert("join-link API parse", False, str(e))
             return
 
         verify = self._request(
@@ -334,7 +344,11 @@ class SmokeRunner:
             return
 
         try:
-            items = listing.json() or []
+            payload = listing.json() or {}
+            items = payload.get("items") if isinstance(payload, dict) else payload
+            if not isinstance(items, list):
+                self._assert("screenshot list payload has items[]", False, str(payload))
+                return
             if not items:
                 self._assert("screenshot list returned 0 items (skipping view tests)", True)
                 return

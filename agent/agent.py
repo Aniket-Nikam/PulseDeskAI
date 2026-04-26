@@ -24,7 +24,7 @@ from typing import List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.config import config
-from capture.window_tracker import get_active_window
+from capture.window_tracker import get_active_browser_url, get_active_window
 from capture.input_monitor import monitor as input_monitor
 from sync.queue import OfflineSyncQueue
 from sync.client import PulseDeskClient
@@ -198,6 +198,7 @@ class PulseDeskAgent:
         now = time.monotonic()
         timestamp = datetime.now(timezone.utc).isoformat()
         app_name, window_title = get_active_window()
+        current_url = get_active_browser_url()
         sample = input_monitor.take_sample()
 
         # FIXED: infinity guard
@@ -222,12 +223,17 @@ class PulseDeskAgent:
             self._event_buffer.append(event)
 
         # Check blocklist
-        if app_name or window_title:
-            self._check_blocklist(app_name, window_title)
+        if app_name or window_title or current_url:
+            self._check_blocklist(app_name, window_title, current_url)
 
-    def _check_blocklist(self, app_name: Optional[str], window_title: Optional[str]):
+    def _check_blocklist(
+        self,
+        app_name: Optional[str],
+        window_title: Optional[str],
+        current_url: Optional[str] = None,
+    ):
         """Detect and report blocked domain access utilizing synced blocklist from client."""
-        domains = self.client.check_window_against_blocklist(app_name, window_title)
+        domains = self.client.check_window_against_blocklist(app_name, window_title, current_url)
         if not domains:
             return
             
@@ -241,7 +247,7 @@ class PulseDeskAgent:
                 continue
                 
             self._last_violation_reported[domain] = now
-            screenshot_requested = self.client.report_violation(domain, window_title, app_name)
+            screenshot_requested = self.client.report_violation(domain, window_title, app_name, current_url)
             if screenshot_requested:
                 log.warning(f"Violation screenshot triggered for domain: {domain}")
                 any_screenshot = True

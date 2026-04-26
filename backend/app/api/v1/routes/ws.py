@@ -18,6 +18,10 @@ router = APIRouter(tags=["websocket"])
 log = get_logger("websocket")
 
 
+def _allowed_ws_origins() -> set[str]:
+    return {origin.rstrip("/") for origin in settings.cors_origins_list}
+
+
 @router.websocket("/ws/live")
 async def live_feed(websocket: WebSocket, token: str | None = Query(default=None)):
     """
@@ -26,6 +30,11 @@ async def live_feed(websocket: WebSocket, token: str | None = Query(default=None
       - ?token=<access_token> (legacy fallback)
     Receives JSON pushes: { "type": "employee_update", "data": {...} }
     """
+    origin = (websocket.headers.get("origin") or "").rstrip("/")
+    if origin and origin not in _allowed_ws_origins():
+        await websocket.close(code=4003)
+        return
+
     if not token:
         token = websocket.cookies.get(settings.ACCESS_COOKIE_NAME)
     if not token:

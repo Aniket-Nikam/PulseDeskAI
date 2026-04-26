@@ -15,6 +15,8 @@ from app.ai.providers.base import AIProviderError
 from app.ai.providers.factory import get_active_provider
 from app.ai.schemas import (
     AIDiagnosticsResponse,
+    AnomalyRecommendationResponse,
+    AnomalyRecommendationStats,
     ActivityPatternsResponse,
     BurnoutEmployee,
     BurnoutResponse,
@@ -25,9 +27,17 @@ from app.ai.schemas import (
 )
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.models import AnomalyLog, DailySummary, Department, Employee
+from app.models import AnomalyLog, AnomalyType, DailySummary, Department, Employee
 
 log = get_logger("ai_service")
+
+VALID_SEVERITIES = {"low", "medium", "high"}
+DEFAULT_ANOMALY_SEVERITY_BY_TYPE = {
+    getattr(AnomalyType.excessive_idle, "value", "excessive_idle"): "medium",
+    getattr(AnomalyType.rapid_app_switching, "value", "rapid_app_switching"): "low",
+    getattr(AnomalyType.after_hours_activity, "value", "after_hours_activity"): "medium",
+    getattr(AnomalyType.unusual_app_usage, "value", "unusual_app_usage"): "medium",
+}
 
 
 def _clean_json_text(raw: str) -> str:
@@ -51,6 +61,124 @@ class AIInsightsService:
         if score >= 45:
             return "medium"
         return "low"
+
+    @staticmethod
+    def _normalize_severity(raw: Optional[str]) -> str:
+        normalized = (raw or "").strip().lower()
+        if normalized in VALID_SEVERITIES:
+            return normalized
+        return "medium"
+
+    @staticmethod
+    def _extract_anomaly_severity(anomaly: AnomalyLog) -> str:
+        metadata = anomaly.event_metadata or {}
+        severity_override = metadata.get("severity_override") if isinstance(metadata, dict) else None
+        severity = metadata.get("severity") if isinstance(metadata, dict) else None
+        if isinstance(severity_override, str):
+            normalized_override = severity_override.strip().lower()
+            if normalized_override in VALID_SEVERITIES:
+                return normalized_override
+        if isinstance(severity, str):
+            normalized_severity = severity.strip().lower()
+            if normalized_severity in VALID_SEVERITIES:
+                return normalized_severity
+
+        anomaly_type = getattr(anomaly.anomaly_type, "value", str(anomaly.anomaly_type))
+        fallback = DEFAULT_ANOMALY_SEVERITY_BY_TYPE.get(anomaly_type, "medium")
+        return AIInsightsService._normalize_severity(fallback)
+
+    @staticmethod
+    def _summarize_anomaly_stats(anomalies: list[AnomalyLog]) -> AnomalyRecommendationStats:
+        high = 0
+        medium = 0
+        low = 0
+        reviewed = 0
+
+        for anomaly in anomalies:
+            severity = AIInsightsService._extract_anomaly_severity(anomaly)
+            if severity == "high":
+                high += 1
+            elif severity == "low":
+                low += 1
+            else:
+                medium += 1
+
+            if bool(getattr(anomaly, "is_reviewed", False)):
+                reviewed += 1
+
+        total = len(anomalies)
+        return AnomalyRecommendationStats(
+            total_violations=total,
+            high_severity=high,
+            medium_severity=medium,
+            low_severity=low,
+            reviewed=reviewed,
+            unreviewed=max(total - reviewed, 0),
+        )
+
+    @staticmethod
+    def _heuristic_anomaly_recommendation(stats: AnomalyRecommendationStats) -> str:
+        if stats.total_violations == 0:
+            return "No violations made. Continue regular monitoring."
+        if stats.high_severity >= 3 or stats.unreviewed >= 8:
+            return (
+                "High risk: schedule a manager check-in within 24 hours, document incidents, "
+                "and start a formal performance improvement plan if this pattern continues."
+            )
+        if stats.high_severity >= 1 or stats.unreviewed >= 4:
+            return (
+                "Medium risk: discuss policy adherence this week, align task priorities, and "
+                "track this employee's violations daily for the next 7 days."
+            )
+        if stats.total_violations >= 5:
+            return (
+                "Moderate pattern: run a coaching conversation, reinforce policy expectations, "
+                "and review progress with the employee in the next weekly check-in."
+            )
+        return (
+            "Low risk: keep monitoring, acknowledge improvement when violations decrease, "
+            "and use a weekly policy reminder."
+        )
+
+    @staticmethod
+    def _build_anomaly_recommendation_prompt(
+        *,
+        employee_name: str,
+        department_name: str,
+        stats: AnomalyRecommendationStats,
+        anomalies: list[AnomalyLog],
+    ) -> str:
+        recent_lines: list[str] = []
+        for anomaly in anomalies[:10]:
+            anomaly_type = getattr(anomaly.anomaly_type, "value", str(anomaly.anomaly_type))
+            severity = AIInsightsService._extract_anomaly_severity(anomaly)
+            detected_at = anomaly.detected_at.isoformat()
+            description = (anomaly.description or "").strip()
+            if len(description) > 180:
+                description = f"{description[:177]}..."
+            recent_lines.append(
+                f"- [{detected_at}] type={anomaly_type}, severity={severity}, reviewed={bool(anomaly.is_reviewed)} :: {description}"
+            )
+
+        recent_text = "\n".join(recent_lines) if recent_lines else "- No recent violation rows"
+        return f"""You are an operations and HR compliance copilot for managers.
+Provide one concise recommendation paragraph (max 90 words) for the manager.
+Base the recommendation on severity mix, total violations, and review status.
+Do not mention that you are an AI model.
+
+Employee: {employee_name}
+Department: {department_name}
+Violation totals:
+- Total: {stats.total_violations}
+- High severity: {stats.high_severity}
+- Medium severity: {stats.medium_severity}
+- Low severity: {stats.low_severity}
+- Reviewed: {stats.reviewed}
+- Unreviewed: {stats.unreviewed}
+
+Recent violations:
+{recent_text}
+"""
 
     async def _build_team_context(self, db: AsyncSession) -> str:
         today = date.today()
@@ -604,6 +732,97 @@ Daily Breakdown:
                 avg_active_hours=avg_active_hours,
                 avg_focus_hours=avg_focus_hours,
                 anomaly_count=anomaly_count,
+            )
+
+    async def anomaly_recommendation(
+        self,
+        employee_id: str,
+        db: AsyncSession,
+    ) -> AnomalyRecommendationResponse:
+        emp_result = await db.execute(
+            select(Employee, Department.name.label("dept_name")).where(Employee.id == employee_id)
+        )
+        emp_row = emp_result.first()
+        if not emp_row:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        employee, dept = emp_row[0], emp_row[1]
+        anomaly_result = await db.execute(
+            select(AnomalyLog)
+            .where(AnomalyLog.employee_id == employee_id)
+            .order_by(AnomalyLog.detected_at.desc())
+            .limit(60)
+        )
+        anomalies = anomaly_result.scalars().all()
+        stats = self._summarize_anomaly_stats(anomalies)
+        fallback_recommendation = self._heuristic_anomaly_recommendation(stats)
+
+        if stats.total_violations == 0:
+            return AnomalyRecommendationResponse(
+                employee_id=str(employee.id),
+                employee_name=employee.full_name,
+                recommendation=fallback_recommendation,
+                source="heuristic",
+                stats=stats,
+                generated_at=datetime.now(timezone.utc),
+            )
+
+        if not self.ai_enabled:
+            return AnomalyRecommendationResponse(
+                employee_id=str(employee.id),
+                employee_name=employee.full_name,
+                recommendation=fallback_recommendation,
+                source="heuristic",
+                stats=stats,
+                generated_at=datetime.now(timezone.utc),
+            )
+
+        prompt = self._build_anomaly_recommendation_prompt(
+            employee_name=employee.full_name,
+            department_name=dept or "No department",
+            stats=stats,
+            anomalies=anomalies,
+        )
+        try:
+            recommendation = await self.provider.generate_text(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=220,
+            )
+            recommendation = (recommendation or "").strip()
+            if not recommendation:
+                recommendation = fallback_recommendation
+                source = "heuristic"
+            else:
+                source = "groq"
+
+            return AnomalyRecommendationResponse(
+                employee_id=str(employee.id),
+                employee_name=employee.full_name,
+                recommendation=recommendation,
+                source=source,
+                stats=stats,
+                generated_at=datetime.now(timezone.utc),
+            )
+        except AIProviderError as e:
+            log.warning("ai_anomaly_recommendation_fallback", error=e.message, retriable=e.retriable)
+            return AnomalyRecommendationResponse(
+                employee_id=str(employee.id),
+                employee_name=employee.full_name,
+                recommendation=fallback_recommendation,
+                source="heuristic",
+                stats=stats,
+                generated_at=datetime.now(timezone.utc),
+            )
+        except Exception as e:
+            log.error("ai_anomaly_recommendation_unknown_failure", error_type=type(e).__name__)
+            return AnomalyRecommendationResponse(
+                employee_id=str(employee.id),
+                employee_name=employee.full_name,
+                recommendation=fallback_recommendation,
+                source="heuristic",
+                stats=stats,
+                generated_at=datetime.now(timezone.utc),
             )
 
     async def diagnostics(self, db: AsyncSession) -> AIDiagnosticsResponse:

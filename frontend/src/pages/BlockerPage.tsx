@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Shield, Plus, Trash2, ToggleLeft, ToggleRight, AlertTriangle, Download } from "lucide-react";
-import { api } from "../api/client";
+import { Shield, Plus, Trash2, ToggleLeft, ToggleRight, Download } from "lucide-react";
+import { blockerApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 
 interface BlockedDomain {
@@ -11,7 +11,6 @@ interface BlockedDomain {
   category: string;
   severity: "low" | "medium" | "high";
   is_active: boolean;
-  violation_count: number;
   created_at: string;
 }
 
@@ -39,38 +38,38 @@ export function BlockerPage() {
 
   const { data: domains = [], isLoading } = useQuery<BlockedDomain[]>({
     queryKey: ["blocked-domains"],
-    queryFn: () => api.get("/blocker/domains").then(r => r.data),
+    queryFn: blockerApi.list,
     refetchInterval: 30_000,
   });
 
-  const { data: violations = [] } = useQuery<any[]>({
-    queryKey: ["violations"],
-    queryFn: () => api.get("/blocker/violations/summary").then(r => r.data),
-    refetchInterval: 60_000,
-  });
-
   const addDomain = useMutation({
-    mutationFn: (data: any) => api.post("/blocker/domains", data).then(r => r.data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["blocked-domains"] }); setShowForm(false); setForm({ domain: "", reason: "", category: "social", severity: "medium", applies_to_all: true }); },
+    mutationFn: blockerApi.add,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["blocked-domains"] });
+      setShowForm(false);
+      setForm({ domain: "", reason: "", category: "social", severity: "medium", applies_to_all: true });
+    },
   });
 
   const removeDomain = useMutation({
-    mutationFn: (id: string) => api.delete(`/blocker/domains/${id}`),
+    mutationFn: blockerApi.remove,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["blocked-domains"] }),
   });
 
   const toggleDomain = useMutation({
-    mutationFn: (id: string) => api.patch(`/blocker/domains/${id}/toggle`).then(r => r.data),
+    mutationFn: blockerApi.toggle,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["blocked-domains"] }),
   });
 
   const loadDefaults = useMutation({
-    mutationFn: () => api.post("/blocker/load-defaults").then(r => r.data),
-    onSuccess: (data) => { qc.invalidateQueries({ queryKey: ["blocked-domains"] }); alert(`✓ Loaded ${data.added} default blocks`); },
+    mutationFn: blockerApi.loadDefaults,
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["blocked-domains"] });
+      alert(`Loaded ${data.added} default blocks`);
+    },
   });
 
   const active = domains.filter(d => d.is_active).length;
-  const totalViolations = violations.reduce((s, v) => s + v.count, 0);
 
   return (
     <div style={{ padding: "var(--space-8)" }}>
@@ -90,11 +89,10 @@ export function BlockerPage() {
       />
 
       {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, marginBottom: 20 }}>
         {[
           { label: "Active blocks", value: active, color: "var(--danger)" },
           { label: "Total domains", value: domains.length, color: "var(--text-primary)" },
-          { label: "Violations today", value: totalViolations, color: totalViolations > 0 ? "var(--warning)" : "var(--text-tertiary)" },
         ].map(({ label, value, color }) => (
           <div key={label} className="card" style={{ padding: "var(--space-4) var(--space-5)" }}>
             <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>{label}</div>
@@ -140,26 +138,6 @@ export function BlockerPage() {
         </div>
       )}
 
-      {/* Violations summary */}
-      {violations.length > 0 && (
-        <div className="card" style={{ padding: "var(--space-5)", marginBottom: 16, border: "1px solid var(--warning)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <AlertTriangle size={16} style={{ color: "var(--warning)" }} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Recent violations</span>
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {violations.map((v: any) => (
-              <div key={v.domain} style={{
-                padding: "4px 12px", borderRadius: "var(--radius-full)",
-                background: "var(--danger-subtle)", color: "var(--danger)", fontSize: 12, fontWeight: 500,
-              }}>
-                {v.domain} ({v.count}×)
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Domain list */}
       <div className="card" style={{ overflow: "hidden" }}>
         {isLoading ? (
@@ -182,7 +160,6 @@ export function BlockerPage() {
                 <th>Category</th>
                 <th>Reason</th>
                 <th>Severity</th>
-                <th>Violations</th>
                 <th>Status</th>
                 <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
@@ -202,12 +179,6 @@ export function BlockerPage() {
                     <td style={{ color: "var(--text-secondary)", fontSize: 12, maxWidth: 200 }}>{d.reason}</td>
                     <td>
                       <span className="badge" style={{ background: sev.bg, color: sev.text }}>{d.severity}</span>
-                    </td>
-                    <td>
-                      {d.violation_count > 0
-                        ? <span className="badge badge-red">{d.violation_count}</span>
-                        : <span style={{ color: "var(--text-tertiary)", fontSize: 12 }}>0</span>
-                      }
                     </td>
                     <td>
                       <span className={`badge ${d.is_active ? "badge-green" : "badge-gray"}`}>

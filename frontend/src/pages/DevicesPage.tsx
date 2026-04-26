@@ -1,15 +1,24 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle, XCircle, Monitor, RefreshCw, Trash2 } from "lucide-react";
+import axios from "axios";
 import { devicesApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import { OnlineBadge } from "../components/ui/OnlineBadge";
 import type { Device } from "../types";
 import { formatDate, platformIcon } from "../utils/format";
 
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (!axios.isAxiosError(error)) return fallback;
+  const detail = error.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  return fallback;
+}
+
 export function DevicesPage() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<"all" | "pending">("all");
+  const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const { data: allDevices = [], isLoading } = useQuery<Device[]>({
     queryKey: ["devices"],
@@ -25,17 +34,38 @@ export function DevicesPage() {
 
   const approve = useMutation({
     mutationFn: devicesApi.approve,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["devices"] }); qc.invalidateQueries({ queryKey: ["devices-pending"] }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["devices"] });
+      qc.invalidateQueries({ queryKey: ["devices-pending"] });
+      setStatusMessage({ type: "success", text: "Device approved successfully." });
+    },
+    onError: (error: unknown) => {
+      setStatusMessage({ type: "error", text: getApiErrorMessage(error, "Failed to approve device.") });
+    },
   });
 
   const revoke = useMutation({
     mutationFn: devicesApi.revoke,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["devices"] }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["devices"] });
+      qc.invalidateQueries({ queryKey: ["devices-pending"] });
+      setStatusMessage({ type: "success", text: "Device revoked. You can now permanently delete it." });
+    },
+    onError: (error: unknown) => {
+      setStatusMessage({ type: "error", text: getApiErrorMessage(error, "Failed to revoke device.") });
+    },
   });
 
   const deleteDevice = useMutation({
     mutationFn: devicesApi.delete,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["devices"] }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["devices"] });
+      qc.invalidateQueries({ queryKey: ["devices-pending"] });
+      setStatusMessage({ type: "success", text: "Device deleted permanently." });
+    },
+    onError: (error: unknown) => {
+      setStatusMessage({ type: "error", text: getApiErrorMessage(error, "Failed to delete device.") });
+    },
   });
 
   const shown = tab === "pending" ? pending : allDevices;
@@ -91,6 +121,29 @@ export function DevicesPage() {
         ))}
       </div>
 
+      {statusMessage && (
+        <div
+          style={{
+            marginBottom: 14,
+            borderRadius: "var(--radius-md)",
+            border: `1px solid ${statusMessage.type === "success" ? "var(--success)" : "var(--danger)"}`,
+            background: statusMessage.type === "success" ? "var(--success-subtle)" : "var(--danger-subtle)",
+            color: statusMessage.type === "success" ? "var(--success)" : "var(--danger)",
+            padding: "10px 12px",
+            fontSize: 13,
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            alignItems: "center",
+          }}
+        >
+          <span>{statusMessage.text}</span>
+          <button className="btn btn-ghost btn-sm" style={{ padding: "2px 6px" }} onClick={() => setStatusMessage(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="card" style={{ overflow: "hidden" }}>
         {isLoading ? (
@@ -133,7 +186,7 @@ export function DevicesPage() {
                       <span style={{ fontWeight: 500 }}>{d.hostname}</span>
                     </div>
                   </td>
-                  <td style={{ color: "var(--text-secondary)" }}>{d.employee_name ?? "—"}</td>
+                  <td style={{ color: "var(--text-secondary)" }}>{d.employee_name ?? "-"}</td>
                   <td>
                     <span style={{ fontSize: 13 }}>
                       {platformIcon(d.platform)} {d.platform}
@@ -144,7 +197,7 @@ export function DevicesPage() {
                     {d.last_heartbeat ? formatDate(d.last_heartbeat) : "Never"}
                   </td>
                   <td style={{ color: "var(--text-tertiary)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
-                    {d.agent_version ?? "—"}
+                    {d.agent_version ?? "-"}
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
@@ -152,7 +205,7 @@ export function DevicesPage() {
                         <button
                           className="btn btn-sm btn-primary"
                           onClick={() => approve.mutate(d.id)}
-                          disabled={approve.isPending}
+                          disabled={approve.isPending && approve.variables === d.id}
                         >
                           <CheckCircle size={12} /> Approve
                         </button>
@@ -161,7 +214,7 @@ export function DevicesPage() {
                         <button
                           className="btn btn-sm btn-danger"
                           onClick={() => { if (confirm("Revoke this device?")) revoke.mutate(d.id); }}
-                          disabled={revoke.isPending}
+                          disabled={revoke.isPending && revoke.variables === d.id}
                         >
                           <XCircle size={12} /> Revoke
                         </button>
@@ -171,7 +224,7 @@ export function DevicesPage() {
                           className="btn btn-sm btn-ghost"
                           style={{ color: "var(--danger)" }}
                           onClick={() => { if (confirm("Permanently delete this device?")) deleteDevice.mutate(d.id); }}
-                          disabled={deleteDevice.isPending}
+                          disabled={deleteDevice.isPending && deleteDevice.variables === d.id}
                         >
                           <Trash2 size={12} /> Delete
                         </button>

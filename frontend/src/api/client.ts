@@ -175,6 +175,16 @@ export const reportsApi = {
   },
 };
 
+export const aiApi = {
+  chat: (data: { message: string; history?: Array<{ role: string; content: string }> }) =>
+    api.post("/ai/chat", data).then((r) => r.data),
+  workRecommendations: (employeeId: string) =>
+    api.get(`/ai/work-recommendations/${employeeId}`).then((r) => r.data),
+  anomalyRecommendation: (employeeId: string) =>
+    api.get(`/ai/anomaly-recommendation/${employeeId}`).then((r) => r.data),
+  diagnostics: () => api.get("/ai/diagnostics/data-status").then((r) => r.data),
+};
+
 export const enrollApi = {
   generateLink: (employeeId: string, serverUrl: string) =>
     api
