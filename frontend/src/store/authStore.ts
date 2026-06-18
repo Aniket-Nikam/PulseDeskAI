@@ -4,9 +4,10 @@ import type { Admin } from "../types";
 
 interface AuthState {
   admin: Admin | null;
+  accessToken: string | null;
   isHydrated: boolean;
 
-  setAuth: (admin: Admin) => void;
+  setAuth: (admin: Admin, token: string) => void;
   setAdmin: (admin: Admin) => void;
   logout: () => void;
   setHydrated: () => void;
@@ -16,11 +17,13 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
       admin: null,
+      accessToken: null,
       isHydrated: false,
 
-      setAuth: (admin) =>
+      setAuth: (admin, token) =>
         set({
           admin,
+          accessToken: token,
         }),
 
       setAdmin: (admin) => set({ admin }),
@@ -28,6 +31,7 @@ export const useAuthStore = create<AuthState>()(
       logout: () =>
         set({
           admin: null,
+          accessToken: null,
         }),
 
       setHydrated: () => set({ isHydrated: true }),
@@ -37,6 +41,7 @@ export const useAuthStore = create<AuthState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({
         admin: s.admin,
+        accessToken: s.accessToken,
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHydrated();

@@ -24,7 +24,7 @@ req = urllib.request.Request(
 resp = urllib.request.urlopen(req)
 data = json.loads(resp.read())
 token = data["access_token"]
-print(f"[OK] Login successful")
+print("[OK] Login successful")
 
 # Get screenshots for a configured employee id
 req = urllib.request.Request(
@@ -49,6 +49,6 @@ for s in shots[:3]:
         print(f"  [FAIL] {shot_id}: {body}")
 
 # Test the frontend URL pattern (what the img src would be through the Vite proxy)
-print(f"\n--- Frontend <img> URL would be: ---")
+print("\n--- Frontend <img> URL would be: ---")
 print(f"  /api/v1/screenshots/view/{shots[0]['id']}?token=<JWT_TOKEN>")
-print(f"\nThis URL goes through Vite proxy -> http://localhost:8000/api/v1/screenshots/view/...")
+print("\nThis URL goes through Vite proxy -> http://localhost:8000/api/v1/screenshots/view/...")

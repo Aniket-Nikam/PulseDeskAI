@@ -40,7 +40,7 @@ class RefreshTokenRequest(BaseModel):
 
 class AdminCreate(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=10)
     full_name: str = Field(min_length=2, max_length=255)
     role: str = "admin"
 
@@ -92,6 +92,10 @@ class EmployeeUpdate(BaseModel):
     work_start_hour: Optional[int] = Field(default=None, ge=0, le=23)
     work_end_hour: Optional[int] = Field(default=None, ge=0, le=23)
     is_active: Optional[bool] = None
+
+
+class EmployeePasswordReset(BaseModel):
+    new_password: str = Field(min_length=8, max_length=256)
 
 
 class EmployeeOut(BaseModel):
@@ -212,12 +216,16 @@ class HeartbeatIn(BaseModel):
     platform: Optional[str] = Field(default=None, max_length=50)
     os_version: Optional[str] = Field(default=None, max_length=100)
     agent_version: Optional[str] = Field(default=None, max_length=20)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class HeartbeatOut(BaseModel):
     status: str
     server_time: datetime
     screenshot_required: bool = False
+    within_geofence: Optional[bool] = None
+    nearest_location_name: Optional[str] = None
 
 
 # ─── Analytics ────────────────────────────────────────────────────────────────

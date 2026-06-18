@@ -3,19 +3,57 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PulseDesk</title>
+    <meta name="description" content="PulseDesk — Self-hosted, privacy-first employee activity analytics. Real-time monitoring, AI insights, and complete data sovereignty." />
+    <title>PulseDesk — Secure Team Analytics</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <script>
       /* Prevent flash of unstyled content — apply theme before React mounts */
       (function() {
-        var t = localStorage.getItem('pd-theme');
-        if (t === 'dark') document.documentElement.dataset.theme = 'dark';
+        var t = localStorage.getItem('pd-landing-theme');
+        if (t === 'light') document.documentElement.dataset.landingTheme = 'light';
+        var dt = localStorage.getItem('pd-theme');
+        if (dt === 'dark') document.documentElement.dataset.theme = 'dark';
       })();
-    </style>
+    </script>
   </head>
   <body>
+    <!-- Loading Screen — renders instantly before React/Vite JS loads -->
+    <div id="pd-loader">
+      <div class="pd-loader-inner">
+        <div class="pd-loader-logo">
+          <span class="pd-loader-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          </span>
+          <span class="pd-loader-name">PulseDesk</span>
+        </div>
+        <div class="pd-loader-pulse">
+          <svg viewBox="0 0 200 40" preserveAspectRatio="none">
+            <path class="pd-pulse-line" d="M0,20 L40,20 L50,20 L60,5 L70,35 L80,10 L90,25 L100,20 L200,20" />
+          </svg>
+        </div>
+        <div class="pd-loader-text">Loading your workspace...</div>
+      </div>
+    </div>
+    <style>
+      #pd-loader{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:#050505;transition:opacity .5s ease,visibility .5s ease}
+      #pd-loader.pd-loader-hide{opacity:0;visibility:hidden;pointer-events:none}
+      .pd-loader-inner{display:flex;flex-direction:column;align-items:center;gap:28px;animation:pdLoaderFadeIn .6s ease}
+      @keyframes pdLoaderFadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+      .pd-loader-logo{display:flex;align-items:center;gap:10px}
+      .pd-loader-icon{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#2997ff,#a855f7);display:flex;align-items:center;justify-content:center;box-shadow:0 0 30px rgba(41,151,255,.3)}
+      .pd-loader-name{font-family:'Outfit','Inter',sans-serif;font-size:28px;font-weight:700;color:#f5f5f7;letter-spacing:-.03em}
+      .pd-loader-pulse{width:160px;height:40px;overflow:hidden}
+      .pd-loader-pulse svg{width:100%;height:100%}
+      .pd-pulse-line{fill:none;stroke:url(#pdPulseGrad);stroke-width:2;stroke-linecap:round;stroke-dasharray:300;stroke-dashoffset:300;animation:pdPulseDraw 1.8s ease-in-out infinite}
+      @keyframes pdPulseDraw{0%{stroke-dashoffset:300}50%{stroke-dashoffset:0}100%{stroke-dashoffset:-300}}
+      .pd-loader-text{font-family:'Inter',sans-serif;font-size:13px;color:#86868b;font-weight:500;letter-spacing:.01em}
+    </style>
+    <svg style="position:absolute;width:0;height:0">
+      <defs><linearGradient id="pdPulseGrad" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#2997ff"/><stop offset="50%" stop-color="#a855f7"/><stop offset="100%" stop-color="#ec4899"/></linearGradient></defs>
+    </svg>
+
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

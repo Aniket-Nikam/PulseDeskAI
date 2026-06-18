@@ -14,25 +14,53 @@ from app.ai.providers.groq_provider import GroqProvider
 
 log = get_logger("screenshot_ai")
 
+# In-memory queue to serialize AI vision analysis and avoid concurrent CPU/memory peaks
+ai_queue: asyncio.Queue = asyncio.Queue()
+
 def _encode_image(image_path: str) -> str:
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
+async def start_screenshot_ai_worker():
+    """Continuous background worker loop executing queued screenshot AI tasks one by one."""
+    log.info("Starting in-memory screenshot AI worker...")
+    while True:
+        screenshot_id = None
+        try:
+            screenshot_id = await ai_queue.get()
+            log.info(f"Screenshot AI worker processing: {screenshot_id}")
+            
+            # Wait briefly to ensure file is completely flushed to disk
+            await asyncio.sleep(1)
+            
+            async with AsyncSessionLocal() as db:
+                await _process_screenshot_with_ai(screenshot_id, db)
+        except asyncio.CancelledError:
+            log.info("Screenshot AI worker task cancelled.")
+            break
+        except Exception as e:
+            log.error(f"Error in screenshot AI worker loop: {e}")
+        finally:
+            if screenshot_id is not None:
+                ai_queue.task_done()
+
 async def process_screenshot_with_ai_task(screenshot_id: uuid.UUID, app_deps=None):
     """
-    Background worker task to analyze a screenshot with Groq AI.
-    It runs in a separate DB session to avoid interfering with the main thread.
+    Enqueue a screenshot ID for serialized background AI analysis.
     """
-    # Wait briefly to ensure file is saved on disk
-    await asyncio.sleep(1)
-    
-    async with AsyncSessionLocal() as db:
-        await _process_screenshot_with_ai(screenshot_id, db)
+    await ai_queue.put(screenshot_id)
+    log.info(f"Enqueued screenshot {screenshot_id} for AI analysis (Queue size: {ai_queue.qsize()})")
 
 async def _process_screenshot_with_ai(screenshot_id: uuid.UUID, db: AsyncSession):
     try:
-        from app.api.v1.routes.blocker import _blocked_domains
-        if not _blocked_domains:
+        if not settings.AI_ENABLED or not settings.AI_SCREENSHOT_ANALYSIS_ENABLED:
+            log.debug("AI screenshot analysis is disabled in settings.")
+            return
+
+        from app.services import blocklist_store
+
+        active_rules_raw = await blocklist_store.get_active_rules(db)
+        if not active_rules_raw:
             log.debug("No active blocklist domains; skipping AI screenshot analysis.")
             return
 
@@ -52,7 +80,7 @@ async def _process_screenshot_with_ai(screenshot_id: uuid.UUID, db: AsyncSession
 
         base64_img = _encode_image(str(filepath))
         active_rules = [{"domain": v["domain"], "category": v["category"], "severity": v.get("severity", "medium")} 
-                        for v in _blocked_domains.values() if v.get("is_active")]
+                        for v in active_rules_raw]
                         
         if not active_rules:
             return
@@ -76,7 +104,7 @@ Please respond in JSON format ONLY:
         client = provider._get_client()
         
         # Primary vision model
-        model_name = "llama-3.2-11b-vision-preview"
+        model_name = settings.GROQ_VISION_MODEL
         
         try:
             # We call groq directly because the existing provider text_generation format doesn't accept image inputs cleanly

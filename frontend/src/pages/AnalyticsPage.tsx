@@ -1,9 +1,10 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { analyticsApi, employeesApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
-import type { Employee, AppUsageStat, DailySummary } from "../types";
+import { EmployeeSearchDropdown } from "../components/ui/EmployeeSearchDropdown";
+import type { Employee, AppUsageStat, DailySummary, EmployeeStatus } from "../types";
 import { formatSeconds, todayISO, categoryColor, productivityColor } from "../utils/format";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid } from "recharts";
 
@@ -177,7 +178,35 @@ export function AnalyticsPage() {
     queryFn: () => employeesApi.list({ is_active: true }),
   });
 
-  const selected = employees.find(e => e.id === employeeId) ?? employees[0];
+  const { data: overview = [] } = useQuery<EmployeeStatus[]>({
+    queryKey: ["overview"],
+    queryFn: analyticsApi.overview,
+    refetchInterval: 30_000,
+  });
+
+  const sortedEmployees = React.useMemo(() => {
+    const statusMap = new Map(overview.map(o => [o.employee_id, o]));
+    return employees.map(emp => {
+      const statusObj = statusMap.get(emp.id);
+      return {
+        ...emp,
+        is_online: statusObj?.is_online ?? false,
+        department_name: emp.department_name || statusObj?.department_name || "—",
+      };
+    }).sort((a, b) => {
+      if (a.is_online && !b.is_online) return -1;
+      if (!a.is_online && b.is_online) return 1;
+      return a.full_name.localeCompare(b.full_name);
+    });
+  }, [employees, overview]);
+
+  useEffect(() => {
+    if (!employeeId && sortedEmployees.length > 0) {
+      setParams({ employee: sortedEmployees[0].id });
+    }
+  }, [sortedEmployees, employeeId, setParams]);
+
+  const selected = sortedEmployees.find(e => e.id === employeeId) ?? sortedEmployees[0];
 
   const { data: timeline, isLoading: tlLoading } = useQuery({
     queryKey: ["timeline", selected?.id, selectedDate],
@@ -226,10 +255,11 @@ export function AnalyticsPage() {
       <PageHeader title="Analytics" subtitle="Deep-dive into individual productivity" />
 
       <div style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
-        <select className="input" style={{ width: "auto", minWidth: 200 }}
-          value={selected?.id ?? ""} onChange={e => setParams({ employee: e.target.value })}>
-          {employees.map(e => <option key={e.id} value={e.id}>{e.full_name}</option>)}
-        </select>
+        <EmployeeSearchDropdown
+          selectedId={selected?.id ?? ""}
+          onChange={id => setParams({ employee: id })}
+          width={220}
+        />
         <input type="date" className="input" style={{ width: "auto" }}
           value={selectedDate} max={todayISO()}
           onChange={e => setSelectedDate(e.target.value)} />

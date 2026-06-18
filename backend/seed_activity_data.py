@@ -7,19 +7,17 @@ Usage:
 """
 
 import asyncio
-import json
-from datetime import datetime, date, time, timedelta, timezone
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, date, timedelta, timezone
 from sqlalchemy import select
 
-from app.db.session import AsyncSessionLocal, init_db
-from app.models import Employee, DailySummary, AnomalyLog, Department, AnomalyType
+from app.db.session import AsyncSessionLocal, ensure_schema_ready
+from app.models import Employee, DailySummary, AnomalyLog, Department
 import uuid
 
 
 async def seed_activity_data():
     """Add dummy activity data for current week"""
-    await init_db()
+    await ensure_schema_ready()
 
     async with AsyncSessionLocal() as db:
         # Get or create a department
@@ -39,8 +37,11 @@ async def seed_activity_data():
         emp_result = await db.execute(
             select(Employee).where(Employee.full_name == "Aniket Nikam")
         )
-        employee = emp_result.scalar_one_or_none()
+        employee = emp_result.scalars().first()
         
+        from app.core.security import hash_password
+        default_pwd_hash = hash_password("PulseDesk123!")
+
         if not employee:
             employee = Employee(
                 id=uuid.uuid4(),
@@ -52,27 +53,27 @@ async def seed_activity_data():
                 work_start_hour=9,
                 work_end_hour=18,
                 is_active=True,
+                hashed_password=default_pwd_hash,
             )
             db.add(employee)
             await db.commit()
             print(f"✓ Created employee: {employee.full_name}")
         else:
-            print(f"✓ Found existing employee: {employee.full_name}")
+            employee.hashed_password = default_pwd_hash
+            await db.commit()
+            print(f"[OK] Found existing employee: {employee.full_name} (updated password)")
 
         # Get current week (Mon-Sun or last 7 days)
         today = date.today()
         start_of_week = today - timedelta(days=today.weekday())  # Monday of current week
         
+        # Purge existing data for this employee to allow clean seeding
+        from sqlalchemy import delete
+        await db.execute(delete(DailySummary).where(DailySummary.employee_id == employee.id))
+        await db.execute(delete(AnomalyLog).where(AnomalyLog.employee_id == employee.id))
+        await db.commit()
+        
         # List of apps to rotate through
-        apps = [
-            ("VS Code", "development", 3600),
-            ("Chrome", "communication", 2400),
-            ("Slack", "communication", 1800),
-            ("Notion", "productivity", 1200),
-            ("Meeting Room", "communication", 2700),
-            ("GitHub", "development", 1500),
-            ("Spotify", "entertainment", 600),
-        ]
         
         # Create activity data for each day this week
         for day_offset in range(7):
@@ -109,13 +110,6 @@ async def seed_activity_data():
                 hourly_active[str(hour)] = 300 + (100 if hour in [10, 14, 15] else -50)
             
             # Build activity breakdown by category
-            activity_breakdown = {
-                "software_development": 4000,
-                "communication": 2000,
-                "productivity": 1200,
-                "entertainment": 300,
-                "other": 500,
-            }
             
             daily_summary = DailySummary(
                 id=uuid.uuid4(),

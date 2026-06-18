@@ -1,8 +1,16 @@
 @echo off
-title PulseDesk Agent — Install
+title PulseDesk Agent
 
-set AGENT=%~dp0
+set "AGENT=%~dp0"
 cd /d "%AGENT%"
+
+REM Check if setup is already completed (venv and .env exist)
+if exist "%AGENT%venv\Scripts\python.exe" (
+    if exist "%AGENT%.env" (
+        call "%AGENT%START_AGENT_SILENT.bat" >nul 2>&1
+        exit /b 0
+    )
+)
 
 echo ================================================
 echo   PulseDesk Agent Installer

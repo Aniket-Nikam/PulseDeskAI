@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from app.db.session import get_db
 from app.models import Employee, Device, DeviceStatus
-from app.core.security import generate_device_token, generate_one_time_token
+from app.core.security import generate_device_token, generate_one_time_token, hash_device_token
 from app.api.v1.routes.auth import require_admin_write, require_admin_read
 from app.core.logging import get_logger
 from app.core.config import settings
@@ -128,7 +128,7 @@ async def get_join_config(token: str, db: AsyncSession = Depends(get_db)):
         employee_id=employee_id,
         hostname="pending",  # agent will update on first heartbeat
         platform="unknown",
-        device_token=device_token,
+        device_token=hash_device_token(device_token),
         status=DeviceStatus.approved,  # pre-approved!
         enrolled_at=datetime.now(timezone.utc),
     )

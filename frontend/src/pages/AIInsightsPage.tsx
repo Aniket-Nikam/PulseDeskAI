@@ -9,8 +9,11 @@ import {
   Sparkles, Shield,
   Brain, User, TrendingUp,
   AlertCircle, BarChart3, Award, Target, ArrowUpRight, ArrowDownRight, Minus,
+  FileText, Calendar, ChevronRight,
 } from "lucide-react";
-import { api } from "../api/client";
+import { api, weeklySummariesApi } from "../api/client";
+import { Dialog } from "../components/ui/Dialog";
+import { EmployeeSearchDropdown } from "../components/ui/EmployeeSearchDropdown";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -130,7 +133,7 @@ function renderMarkdown(text: string) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-type Tab = "chat" | "pulse" | "recommendations";
+type Tab = "chat" | "pulse" | "recommendations" | "weekly_reports";
 
 export function AIInsightsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("chat");
@@ -167,6 +170,7 @@ export function AIInsightsPage() {
           { id: "chat" as Tab, icon: Bot, label: "AI Chat Analyst" },
           { id: "pulse" as Tab, icon: BarChart3, label: "Team Pulse Summary" },
           { id: "recommendations" as Tab, icon: Zap, label: "Work Recommendations" },
+          { id: "weekly_reports" as Tab, icon: FileText, label: "Weekly AI Reports" },
         ] as const).map(({ id, icon: Icon, label }) => (
           <button key={id} onClick={() => setActiveTab(id)} style={{
             display: "flex", alignItems: "center", gap: 7,
@@ -187,6 +191,7 @@ export function AIInsightsPage() {
       {activeTab === "chat"            && <ChatPanel />}
       {activeTab === "pulse"           && <TeamPulsePanel />}
       {activeTab === "recommendations" && <WorkRecommendationsPanel />}
+      {activeTab === "weekly_reports"  && <WeeklyAIReportsPanel />}
     </div>
   );
 }
@@ -931,22 +936,11 @@ function WorkRecommendationsPanel() {
         <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase" }}>
           Select Employee
         </label>
-        <select
-          value={selectedEmployee}
-          onChange={e => setSelectedEmployee(e.target.value)}
-          disabled={loadingEmployees}
-          style={{
-            padding: "10px 12px", borderRadius: "var(--radius-md)",
-            border: "1px solid var(--border-default)", background: "var(--bg-secondary)",
-            color: "var(--text-primary)", fontSize: 13.5, cursor: "pointer",
-          }}
-        >
-          {employees.map(emp => (
-            <option key={emp.id} value={emp.id}>
-              {emp.full_name}
-            </option>
-          ))}
-        </select>
+        <EmployeeSearchDropdown
+          selectedId={selectedEmployee}
+          onChange={setSelectedEmployee}
+          width="100%"
+        />
       </div>
 
       {/* Loading state */}
@@ -1192,3 +1186,239 @@ function WorkRecommendationsPanel() {
     </div>
   );
 }
+
+
+function WeeklyAIReportsPanel() {
+  const [summaries, setSummaries] = useState<any[]>([]);
+  const [selectedSummary, setSelectedSummary] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [triggering, setTriggering] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0]);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchSummaries = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await weeklySummariesApi.list();
+      setSummaries(data);
+      if (data.length > 0) {
+        setSelectedSummary(data[0]);
+      }
+    } catch (err) {
+      setError("Failed to load weekly summaries.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSummaries();
+  }, [fetchSummaries]);
+
+  const handleTrigger = async () => {
+    setTriggering(true);
+    setError(null);
+    try {
+      const newSummary = await weeklySummariesApi.trigger(selectedDate);
+      await Dialog.alert("Weekly summary generated successfully!", "Success");
+      setSelectedSummary(newSummary);
+      fetchSummaries();
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || "Make sure telemetry data exists for the selected week.";
+      await Dialog.alert(`Failed to trigger summary: ${detail}`, "Trigger Failed");
+    } finally {
+      setTriggering(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+      {/* Trigger Control Panel */}
+      <div className="card" style={{ padding: "var(--space-5)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: "var(--radius-lg)", background: "var(--accent-subtle)",
+            display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid var(--accent-subtle)"
+          }}>
+            <FileText size={22} style={{ color: "var(--accent)" }} />
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 16, color: "var(--text-primary)", marginBottom: 2 }}>Weekly AI Management Reports</div>
+            <div style={{ fontSize: 13, color: "var(--text-tertiary)" }}>Aggregate telemetry summaries and generate executive recommendations weekly.</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Target Date</label>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="input"
+              style={{ padding: "8px 12px", width: 140 }}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, alignSelf: "flex-end" }}>
+            <button
+              onClick={handleTrigger}
+              disabled={triggering}
+              className="btn btn-primary"
+              style={{ display: "flex", alignItems: "center", gap: 8, height: 38 }}
+            >
+              {triggering ? <RefreshCw size={15} className="spin" /> : <Sparkles size={15} />}
+              {triggering ? "Generating..." : "Compile Summary"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="skeleton" style={{ height: 120, borderRadius: "var(--radius-xl)" }} />
+          <div className="skeleton" style={{ height: 300, borderRadius: "var(--radius-xl)" }} />
+        </div>
+      ) : summaries.length === 0 ? (
+        <div className="card empty-state" style={{ padding: "64px 24px", textAlign: "center" }}>
+          <div className="empty-state-icon">📊</div>
+          <div className="empty-state-title">No Weekly AI Reports Yet</div>
+          <div className="empty-state-body">Select a date above and compile the first executive report!</div>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: "var(--space-6)" }}>
+          {/* List Sidebar */}
+          <div className="card" style={{ padding: "var(--space-4)", display: "flex", flexDirection: "column", gap: 12, height: "fit-content" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.06em", padding: "0 4px" }}>
+              Report History
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 600, overflowY: "auto", paddingRight: 4 }}>
+              {summaries.map((s) => {
+                const isSelected = selectedSummary?.id === s.id;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => setSelectedSummary(s)}
+                    style={{
+                      textAlign: "left",
+                      padding: "12px 14px",
+                      borderRadius: "var(--radius-md)",
+                      border: isSelected ? "1px solid var(--accent)" : "1px solid transparent",
+                      background: isSelected ? "var(--accent-subtle)" : "var(--bg-secondary)",
+                      cursor: "pointer",
+                      outline: "none",
+                      width: "100%",
+                      transition: "all 0.2s ease",
+                      position: "relative",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected) {
+                        e.currentTarget.style.background = "var(--bg-tertiary)";
+                        e.currentTarget.style.border = "1px solid var(--border-default)";
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected) {
+                        e.currentTarget.style.background = "var(--bg-secondary)";
+                        e.currentTarget.style.border = "1px solid transparent";
+                      }
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13, color: isSelected ? "var(--accent-text)" : "var(--text-primary)", display: "flex", alignItems: "center", gap: 6 }}>
+                      <Calendar size={14} style={{ color: isSelected ? "var(--accent)" : "var(--text-tertiary)" }} />
+                      Week of {s.week_start}
+                    </div>
+                    <div style={{ fontSize: 11, color: isSelected ? "var(--accent-text)" : "var(--text-tertiary)", opacity: 0.8, paddingLeft: 20 }}>
+                      to {s.week_end}
+                    </div>
+                    {isSelected && (
+                      <div style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)" }}>
+                        <ChevronRight size={16} color="var(--accent)" />
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Details Panel */}
+          {selectedSummary && (
+            <div className="card" style={{ padding: "var(--space-6)", display: "flex", flexDirection: "column", gap: 24, boxShadow: "var(--shadow-sm)" }}>
+              <div style={{ borderBottom: "1px solid var(--border-subtle)", paddingBottom: 16 }}>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "var(--text-primary)", marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Award size={20} style={{ color: "var(--accent)" }} />
+                  Executive Weekly Summary
+                </h3>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--text-secondary)" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <Calendar size={14} /> {selectedSummary.week_start} to {selectedSummary.week_end}
+                  </span>
+                  <span>•</span>
+                  <span style={{ color: "var(--text-tertiary)" }}>Generated on {new Date(selectedSummary.created_at).toLocaleString()}</span>
+                </div>
+              </div>
+
+              {/* Metrics grid for the week */}
+              {selectedSummary.metrics && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>
+                    Key Performance Indicators
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16 }}>
+                    <div style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-subtle)", padding: 16, borderRadius: "var(--radius-lg)" }}>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", fontWeight: 500 }}>Active Hours</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--accent)", marginTop: 6 }}>{selectedSummary.metrics.total_active_hours}h</div>
+                    </div>
+                    <div style={{ background: "var(--bg-secondary)", border: "1px solid var(--border-subtle)", padding: 16, borderRadius: "var(--radius-lg)" }}>
+                      <div style={{ fontSize: 11, color: "var(--text-tertiary)", textTransform: "uppercase", fontWeight: 500 }}>Idle Hours</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--warning)", marginTop: 6 }}>{selectedSummary.metrics.total_idle_hours}h</div>
+                    </div>
+                    <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.15)", padding: 16, borderRadius: "var(--radius-lg)" }}>
+                      <div style={{ fontSize: 11, color: "var(--success)", textTransform: "uppercase", fontWeight: 600 }}>Avg Productivity</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--success)", marginTop: 6 }}>{selectedSummary.metrics.avg_productivity_score}%</div>
+                    </div>
+                    <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)", padding: 16, borderRadius: "var(--radius-lg)" }}>
+                      <div style={{ fontSize: 11, color: "var(--danger)", textTransform: "uppercase", fontWeight: 600 }}>Total Anomalies</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--danger)", marginTop: 6 }}>{selectedSummary.metrics.total_anomalies}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Weekly report markdown content */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>
+                  AI Analysis & Recommendations
+                </div>
+                <div style={{ 
+                  fontSize: 14, 
+                  color: "var(--text-secondary)", 
+                  lineHeight: 1.7, 
+                  background: "var(--bg-secondary)", 
+                  padding: "20px 24px", 
+                  borderRadius: "var(--radius-lg)", 
+                  border: "1px solid var(--border-default)" 
+                }}>
+                  {renderMarkdown(selectedSummary.summary_text)}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      
+      <style>{`
+        .spin {
+          animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  );
+}
+

@@ -20,9 +20,10 @@ from app.schemas import PolicyCreate
 from app.api.v1.routes.auth import require_admin_read, require_admin_write
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.core.security import decode_token
+from app.core.security import decode_token, device_token_lookup_values, check_admin_can_view_employee
 from app.core.files import safe_path_join, sanitize_filename_component
 from app.core.rate_limit import enforce_rate_limit
+from app.core.agent_auth import verify_agent_request_signature
 from app.core.audit import log_admin_action
 from app.models import Admin as AdminModel
 from jose import JWTError
@@ -38,6 +39,12 @@ def _safe_file_exists(file_path: str) -> bool:
         return safe_path_join(settings.SCREENSHOT_DIR, file_path).exists()
     except HTTPException:
         return False
+
+
+def _save_file(file_path, data) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(file_path, "wb") as f:
+        f.write(data)
 
 
 def _extract_device_token_from_request(request: Request, provided_token: str | None = None) -> str:
@@ -73,11 +80,14 @@ async def upload_screenshot(
         include_auth_fingerprint=False,
         custom_identifier=device_token,
     )
+    await verify_agent_request_signature(request, device_token)
 
-    result = await db.execute(select(Device).where(Device.device_token == device_token))
+    result = await db.execute(select(Device).where(Device.device_token.in_(device_token_lookup_values(device_token))))
     device = result.scalar_one_or_none()
     if not device or device.status != DeviceStatus.approved:
         raise HTTPException(status_code=401, detail="Device not authorized")
+    if not device.monitoring_consent_given:
+        raise HTTPException(status_code=403, detail="Monitoring consent required")
 
     if file.content_type not in {"image/jpeg", "image/jpg", "image/png"}:
         raise HTTPException(status_code=400, detail="Unsupported image content type")
@@ -92,39 +102,56 @@ async def upload_screenshot(
     # worker (like Celery/Arq) will significantly improve the endpoint's response time 
     # and reduce blocking of the FastAPI worker threads.
     # Try to compress with Pillow if available
+    import asyncio
     try:
         if len(contents) > settings.SCREENSHOT_MAX_SIZE_KB * 1024:
-            contents = _compress_image(contents, settings.SCREENSHOT_MAX_SIZE_KB)
+            contents = await asyncio.to_thread(_compress_image, contents, settings.SCREENSHOT_MAX_SIZE_KB)
             file_ext = "jpg"
-    except ImportError:
-        pass  # Pillow not installed, save as-is
+    except Exception as e:
+        log.warning("screenshot_compression_failed", error=str(e))
 
     shot_id = uuid.uuid4()
     filename = sanitize_filename_component(f"{device.employee_id}_{shot_id}.{file_ext}")
     filepath = safe_path_join(settings.SCREENSHOT_DIR, filename)
 
-    with open(filepath, "wb") as f:
-        f.write(contents)
-
+    # ✅ TRANSACTION: Save file first, then DB record with proper rollback on failure
     try:
-        ts = datetime.fromisoformat(captured_at)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-    except ValueError:
-        ts = datetime.now(timezone.utc)
+        # Step 1: Write file to disk
+        await asyncio.to_thread(_save_file, filepath, contents)
+        
+        # Step 2: Parse timestamp
+        try:
+            ts = datetime.fromisoformat(captured_at)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except ValueError:
+            ts = datetime.now(timezone.utc)
 
-    screenshot = Screenshot(
-        id=shot_id,
-        employee_id=device.employee_id,
-        device_id=device.id,
-        captured_at=ts,
-        file_path=filename,
-        file_size_bytes=len(contents),
-        trigger=trigger,
-    )
-    db.add(screenshot)
-    await db.commit()
-    log.info("screenshot_saved", employee_id=str(device.employee_id), size_bytes=len(contents))
+        # Step 3: Create and save DB record
+        screenshot = Screenshot(
+            id=shot_id,
+            employee_id=device.employee_id,
+            device_id=device.id,
+            captured_at=ts,
+            file_path=filename,
+            file_size_bytes=len(contents),
+            trigger=trigger,
+        )
+        db.add(screenshot)
+        await db.commit()
+        log.info("screenshot_saved", employee_id=str(device.employee_id), size_bytes=len(contents))
+        
+    except Exception as e:
+        # ✅ ROLLBACK: Clean up on failure to prevent orphaned files
+        await db.rollback()
+        if filepath.exists():
+            try:
+                os.remove(filepath)
+                log.info("orphaned_screenshot_cleaned", file=filename)
+            except OSError as cleanup_err:
+                log.error("failed_to_cleanup_orphaned_file", file=filename, error=str(cleanup_err))
+        log.error("screenshot_save_failed", error=str(e), file=filename)
+        raise HTTPException(status_code=500, detail="Failed to save screenshot. Please retry.")
     
     # TRIGGER ASYNC AI ANALYSIS
     try:
@@ -148,6 +175,10 @@ async def list_screenshots(
     admin=Depends(require_admin_read),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    List screenshots for an employee with privacy controls.
+    Admins can only view screenshots for employees they have access to.
+    """
     from sqlalchemy import func
     from datetime import datetime, timedelta
 
@@ -158,6 +189,24 @@ async def list_screenshots(
         window_seconds=60,
         include_auth_fingerprint=True,
     )
+
+    # ✅ PRIVACY CHECK: Verify admin has access to this employee's data
+    can_access = await check_admin_can_view_employee(
+        admin_id=admin.id,
+        admin_role=admin.role.value,
+        employee_id=employee_id,
+        db=db,
+    )
+    
+    if not can_access:
+        log.warning(
+            "unauthorized_screenshot_access",
+            admin_id=str(admin.id),
+            admin_role=admin.role.value,
+            employee_id=str(employee_id),
+            action="list_screenshots",
+        )
+        raise HTTPException(status_code=403, detail="You do not have access to view screenshots for this employee")
 
     base_filter = Screenshot.employee_id == employee_id
     filters = [base_filter]
@@ -220,7 +269,11 @@ async def view_screenshot(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Serve a screenshot image. Accepts auth via:
+    Serve a screenshot image with privacy controls.
+    
+    Admin can only view if they have access to that employee's data.
+    
+    Accepts auth via:
       - Authorization: Bearer <token>  header  (API calls)
       - ?token=<jwt>  query parameter          (<img src> tags)
     """
@@ -269,9 +322,39 @@ async def view_screenshot(
     if not shot:
         raise HTTPException(status_code=404, detail="Screenshot not found")
 
+    # ✅ PRIVACY CHECK: Verify admin has access to this employee's screenshot
+    can_access = await check_admin_can_view_employee(
+        admin_id=admin.id,
+        admin_role=admin.role.value,
+        employee_id=shot.employee_id,
+        db=db,
+    )
+    
+    if not can_access:
+        log.warning(
+            "unauthorized_screenshot_access",
+            admin_id=str(admin.id),
+            admin_role=admin.role.value,
+            employee_id=str(shot.employee_id),
+            screenshot_id=str(screenshot_id),
+            action="view_screenshot",
+        )
+        raise HTTPException(status_code=403, detail="You do not have access to view this screenshot")
+
     filepath = safe_path_join(settings.SCREENSHOT_DIR, shot.file_path)
+    # ✅ VALIDATION: Verify file still exists and is readable
     if not filepath.exists():
+        log.warning("screenshot_file_missing_on_disk", screenshot_id=str(shot.id), file_path=shot.file_path)
         raise HTTPException(status_code=404, detail="File not found on disk")
+    
+    if not filepath.is_file():
+        log.warning("screenshot_path_not_file", screenshot_id=str(shot.id), file_path=shot.file_path)
+        raise HTTPException(status_code=404, detail="Invalid file path")
+    
+    # Verify file is readable
+    if not os.access(filepath, os.R_OK):
+        log.warning("screenshot_file_not_readable", screenshot_id=str(shot.id), file_path=shot.file_path)
+        raise HTTPException(status_code=403, detail="Cannot read screenshot file")
 
     log_admin_action(
         "screenshot_viewed",
@@ -322,7 +405,10 @@ async def delete_screenshot(
     admin=Depends(require_admin_write),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a single screenshot (DB record + file on disk)."""
+    """
+    Delete a single screenshot (DB record + file on disk) with privacy controls.
+    Only admins with access to the employee can delete their screenshots.
+    """
     enforce_rate_limit(
         request,
         key_prefix="admin_screenshot_delete",
@@ -335,6 +421,25 @@ async def delete_screenshot(
     shot = result.scalar_one_or_none()
     if not shot:
         raise HTTPException(status_code=404, detail="Screenshot not found")
+
+    # ✅ PRIVACY CHECK: Verify admin has access to this employee's screenshot
+    can_access = await check_admin_can_view_employee(
+        admin_id=admin.id,
+        admin_role=admin.role.value,
+        employee_id=shot.employee_id,
+        db=db,
+    )
+    
+    if not can_access:
+        log.warning(
+            "unauthorized_screenshot_access",
+            admin_id=str(admin.id),
+            admin_role=admin.role.value,
+            employee_id=str(shot.employee_id),
+            screenshot_id=str(screenshot_id),
+            action="delete_screenshot",
+        )
+        raise HTTPException(status_code=403, detail="You do not have access to delete this screenshot")
 
     # Remove file from disk if it exists
     filepath = safe_path_join(settings.SCREENSHOT_DIR, shot.file_path)
@@ -349,7 +454,7 @@ async def delete_screenshot(
     await db.delete(shot)
     await db.commit()
     log.info("screenshot_deleted", id=str(screenshot_id), admin=str(admin.id))
-    log_admin_action("screenshot_deleted", admin_id=str(admin.id), screenshot_id=str(screenshot_id))
+    log_admin_action("screenshot_deleted", admin_id=str(admin.id), screenshot_id=str(screenshot_id), employee_id=str(shot.employee_id))
     return {"status": "deleted", "id": str(screenshot_id)}
 
 
@@ -488,12 +593,18 @@ async def check_screenshot_required(
         window_seconds=60,
         custom_identifier=resolved_token,
     )
+    await verify_agent_request_signature(request, resolved_token)
 
     result = await db.execute(
-        select(Device).where(Device.device_token == resolved_token, Device.status == DeviceStatus.approved)
+        select(Device).where(
+            Device.device_token.in_(device_token_lookup_values(resolved_token)),
+            Device.status == DeviceStatus.approved,
+        )
     )
     device = result.scalar_one_or_none()
     if not device:
+        return {"required": False}
+    if not device.monitoring_consent_given:
         return {"required": False}
 
     # Effective policy is the latest enabled policy.

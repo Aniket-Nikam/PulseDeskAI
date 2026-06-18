@@ -74,6 +74,10 @@ def enforce_rate_limit(
     if not allowed:
         raise HTTPException(
             status_code=429,
-            detail="Too many requests. Please retry shortly.",
-            headers={"Retry-After": str(retry_after)},
+            detail=f"Too many requests. Please retry after {retry_after} seconds.",
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(limit),
+                "X-RateLimit-Window": str(window_seconds),
+            },
         )

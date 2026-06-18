@@ -3,8 +3,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Camera, Shield, Trash2, X, ZoomIn } from "lucide-react";
 import { analyticsApi, employeesApi, api } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
+import { EmployeeSearchDropdown } from "../components/ui/EmployeeSearchDropdown";
 import type { Employee } from "../types";
 import { formatDate } from "../utils/format";
+import { Dialog } from "../components/ui/Dialog";
 
 const MIN_CARD_WIDTH = 220;
 const GRID_GAP = 10;
@@ -86,14 +88,14 @@ export function ScreenshotsPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["policies"] }); },
   });
 
-  const handleTogglePolicy = (policy: ScreenshotPolicy) => {
+  const handleTogglePolicy = async (policy: ScreenshotPolicy) => {
     const action = policy.is_active ? "disable" : "enable";
-    if (!window.confirm(`Are you sure you want to ${action} "${policy.name}"?`)) return;
+    if (!await Dialog.confirm(`Are you sure you want to ${action} "${policy.name}"?`, "Toggle Policy")) return;
     togglePolicy.mutate(policy.id);
   };
 
-  const handleDeletePolicy = (policy: ScreenshotPolicy) => {
-    if (!window.confirm(`Delete policy "${policy.name}"? This cannot be undone.`)) return;
+  const handleDeletePolicy = async (policy: ScreenshotPolicy) => {
+    if (!await Dialog.confirm(`Delete policy "${policy.name}"? This cannot be undone.`, "Delete Policy")) return;
     deletePolicy.mutate(policy.id);
   };
 
@@ -220,10 +222,13 @@ export function ScreenshotsPage() {
       <div>
         <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>View screenshots</h2>
-          <select className="input" style={{ width: "auto" }} value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)}>
-            <option value="">Select employee...</option>
-            {employees.map((e) => <option key={e.id} value={e.id}>{e.full_name}</option>)}
-          </select>
+          <EmployeeSearchDropdown
+            selectedId={selectedEmployee}
+            onChange={setSelectedEmployee}
+            allowEmpty={true}
+            placeholder="Select employee..."
+            width="auto"
+          />
         </div>
         {!selectedEmployee ? (
           <div className="card empty-state" style={{ padding: "var(--space-8)" }}>
@@ -247,30 +252,8 @@ function ScreenshotGallery({ employeeId }: { employeeId: string }) {
   const [page, setPage] = useState(1);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
-  const [columnCount, setColumnCount] = useState(6);
-  const pageSize = columnCount * TARGET_ROWS;
-
-  useEffect(() => {
-    const node = gridRef.current;
-    if (!node) return;
-
-    const updateColumns = () => {
-      const width = node.clientWidth;
-      const cols = Math.max(1, Math.floor((width + GRID_GAP) / (MIN_CARD_WIDTH + GRID_GAP)));
-      setColumnCount((prev) => (prev === cols ? prev : cols));
-    };
-
-    updateColumns();
-
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(updateColumns);
-      observer.observe(node);
-      return () => observer.disconnect();
-    }
-
-    window.addEventListener("resize", updateColumns);
-    return () => window.removeEventListener("resize", updateColumns);
-  }, []);
+  const columnCount = 8;
+  const pageSize = 24;
 
   useEffect(() => {
     setPage(1);
@@ -327,13 +310,13 @@ function ScreenshotGallery({ employeeId }: { employeeId: string }) {
     },
   });
 
-  const handleCleanupMissing = () => {
-    if (!window.confirm("Remove screenshot records whose image files are missing on disk?")) return;
+  const handleCleanupMissing = async () => {
+    if (!await Dialog.confirm("Remove screenshot records whose image files are missing on disk?", "Cleanup Records")) return;
     cleanupMissing.mutate();
   };
 
-  const handleDeleteScreenshot = (screenshot: ScreenshotItem) => {
-    if (!window.confirm("Delete this screenshot permanently? This cannot be undone.")) return;
+  const handleDeleteScreenshot = async (screenshot: ScreenshotItem) => {
+    if (!await Dialog.confirm("Delete this screenshot permanently? This cannot be undone.", "Delete Screenshot")) return;
     deleteScreenshot.mutate(screenshot.id);
   };
 

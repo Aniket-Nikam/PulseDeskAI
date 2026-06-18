@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import generate_device_token
+from app.core.security import generate_device_token, hash_device_token
 from app.models import (
     ActivityEvent,
     AnomalyLog,
@@ -50,7 +50,7 @@ async def enroll_device(payload: DeviceEnrollRequest, db: AsyncSession) -> dict:
             }
         return {
             "device_id": str(existing_device.id),
-            "device_token": existing_device.device_token,
+            "device_token": "",
             "status": "pending",
             "message": "Enrollment pending admin approval. Show code to your admin: "
             + (existing_device.enrollment_code or ""),
@@ -67,7 +67,7 @@ async def enroll_device(payload: DeviceEnrollRequest, db: AsyncSession) -> dict:
         platform=payload.platform,
         os_version=payload.os_version,
         agent_version=payload.agent_version,
-        device_token=token,
+        device_token=hash_device_token(token),
         enrollment_code=enrollment_code,
         status=DeviceStatus.pending,
     )

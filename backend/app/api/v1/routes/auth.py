@@ -25,6 +25,29 @@ security = HTTPBearer(auto_error=False)
 log = get_logger("auth")
 
 
+class AdminSignup(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=10, max_length=256)
+    full_name: str = Field(min_length=2, max_length=255)
+    business_name: str | None = Field(default=None, max_length=255)
+
+
+def _validate_password_strength(password: str) -> None:
+    if len(password) < 10:
+        raise HTTPException(status_code=400, detail="Password must be at least 10 characters")
+    checks = [
+        any(ch.islower() for ch in password),
+        any(ch.isupper() for ch in password),
+        any(ch.isdigit() for ch in password),
+        any(not ch.isalnum() for ch in password),
+    ]
+    if sum(checks) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must include at least three of: uppercase, lowercase, number, symbol",
+        )
+
+
 def _set_auth_cookies(
     response: Response,
     *,
@@ -120,6 +143,17 @@ async def get_current_admin(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    role = payload.get("role")
+    if role == "employee":
+        from app.models import Employee
+        result = await db.execute(
+            select(Employee).where(Employee.id == admin_id, Employee.is_active)
+        )
+        employee = result.scalar_one_or_none()
+        if not employee:
+            raise HTTPException(status_code=401, detail="Employee account not found or deactivated")
+        return employee
+
     result = await db.execute(
         select(Admin).where(Admin.id == admin_id, Admin.is_active)
     )
@@ -143,7 +177,7 @@ require_admin_write = require_role(UserRole.super_admin, UserRole.admin)
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -164,31 +198,97 @@ async def login(
     result = await db.execute(select(Admin).where(Admin.email == email))
     admin = result.scalar_one_or_none()
 
-    if not admin or not verify_password(payload.password, admin.hashed_password):
-        log.warning("failed_login", email=email)
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    user_id = None
+    role = None
+    full_name = None
 
-    if not admin.is_active:
-        raise HTTPException(status_code=403, detail="Account deactivated")
+    if admin:
+        if not verify_password(payload.password, admin.hashed_password):
+            log.warning("failed_login", email=email)
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        if not admin.is_active:
+            raise HTTPException(status_code=403, detail="Account deactivated")
+        admin.last_login = datetime.now(timezone.utc)
+        await db.commit()
+        user_id = admin.id
+        role = admin.role.value if hasattr(admin.role, "value") else str(admin.role)
+        full_name = admin.full_name
+        log.info("admin_logged_in", admin_id=str(admin.id))
+        log_admin_action("auth_login", admin_id=str(admin.id))
+    else:
+        # Fallback to Employee login
+        from app.models import Employee
+        emp_result = await db.execute(select(Employee).where(Employee.email == email))
+        employee = emp_result.scalar_one_or_none()
+        if not employee or not employee.hashed_password or not verify_password(payload.password, employee.hashed_password):
+            log.warning("failed_login", email=email)
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        if not employee.is_active:
+            raise HTTPException(status_code=403, detail="Account deactivated")
+        user_id = employee.id
+        role = "employee"
+        full_name = employee.full_name
+        log.info("employee_logged_in", employee_id=str(employee.id))
 
-    admin.last_login = datetime.now(timezone.utc)
-    await db.commit()
-
-    role = admin.role.value if hasattr(admin.role, "value") else str(admin.role)
-    token_data = {"sub": str(admin.id), "role": role}
+    token_data = {"sub": str(user_id), "role": role}
     access_token = create_access_token(token_data)
     refresh_token = create_refresh_token(token_data)
     _set_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)
 
-    log.info("admin_logged_in", admin_id=str(admin.id))
-    log_admin_action("auth_login", admin_id=str(admin.id))
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        admin_id=user_id,
+        full_name=full_name,
+        role=role,
+    )
+
+
+@router.post("/signup", response_model=TokenResponse, status_code=201)
+async def signup(
+    payload: AdminSignup,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    enforce_rate_limit(
+        request,
+        key_prefix="auth_signup",
+        limit=20,
+        window_seconds=60,
+    )
+    email = payload.email.strip().lower()
+    existing = await db.execute(select(Admin).where(Admin.email == email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    _validate_password_strength(payload.password)
+
+    admin = Admin(
+        email=email,
+        hashed_password=hash_password(payload.password),
+        full_name=payload.full_name,
+        business_name=payload.business_name,
+        role=UserRole.super_admin,
+        is_active=True,
+    )
+    db.add(admin)
+    await db.commit()
+    await db.refresh(admin)
+
+    log.info("admin_registered", admin_id=str(admin.id))
+
+    token_data = {"sub": str(admin.id), "role": admin.role.value}
+    access_token = create_access_token(token_data)
+    refresh_token = create_refresh_token(token_data)
+    _set_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)
 
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         admin_id=admin.id,
         full_name=admin.full_name,
-        role=admin.role,
+        role=admin.role.value,
     )
 
 
@@ -220,26 +320,39 @@ async def refresh(
         raise HTTPException(status_code=401, detail="Refresh token expired or invalid")
 
     admin_id = data.get("sub")
-    result = await db.execute(
-        select(Admin).where(Admin.id == admin_id, Admin.is_active)
-    )
-    admin = result.scalar_one_or_none()
-    if not admin:
-        raise HTTPException(status_code=401, detail="Admin not found")
+    role = data.get("role")
 
-    role = admin.role.value if hasattr(admin.role, "value") else str(admin.role)
-    token_data = {"sub": str(admin.id), "role": role}
+    if role == "employee":
+        from app.models import Employee
+        result = await db.execute(
+            select(Employee).where(Employee.id == admin_id, Employee.is_active)
+        )
+        employee = result.scalar_one_or_none()
+        if not employee:
+            raise HTTPException(status_code=401, detail="Employee not found")
+        full_name = employee.full_name
+    else:
+        result = await db.execute(
+            select(Admin).where(Admin.id == admin_id, Admin.is_active)
+        )
+        admin = result.scalar_one_or_none()
+        if not admin:
+            raise HTTPException(status_code=401, detail="Admin not found")
+        full_name = admin.full_name
+        role = admin.role.value if hasattr(admin.role, "value") else str(admin.role)
+
+    token_data = {"sub": str(admin_id), "role": role}
     new_access_token = create_access_token(token_data)
     new_refresh_token = create_refresh_token(token_data)
     _set_auth_cookies(response, access_token=new_access_token, refresh_token=new_refresh_token)
-    log.info("token_refreshed", admin_id=str(admin.id))
+    log.info("token_refreshed", admin_id=str(admin_id))
 
     return TokenResponse(
         access_token=new_access_token,
         refresh_token=new_refresh_token,
-        admin_id=admin.id,
-        full_name=admin.full_name,
-        role=admin.role,
+        admin_id=admin_id,
+        full_name=full_name,
+        role=role,
     )
 
 
@@ -258,10 +371,21 @@ async def logout(request: Request, response: Response):
     return {"message": "Logged out"}
 
 
-@router.get("/me", response_model=AdminOut)
-async def get_me(current_admin: Admin = Depends(get_current_admin)):
-    """Returns current admin profile. Used by frontend on startup to validate session."""
-    return current_admin
+@router.get("/me")
+async def get_me(current_admin = Depends(get_current_admin)):
+    """Returns current admin/employee profile. Used by frontend on startup to validate session."""
+    is_employee = getattr(current_admin, "role", None) == UserRole.employee
+    role_str = "employee" if is_employee else current_admin.role.value
+    return {
+        "id": str(current_admin.id),
+        "email": current_admin.email,
+        "full_name": current_admin.full_name,
+        "business_name": getattr(current_admin, "business_name", None),
+        "role": role_str,
+        "is_active": current_admin.is_active,
+        "last_login": getattr(current_admin, "last_login", None),
+        "created_at": current_admin.created_at.isoformat() if current_admin.created_at else None,
+    }
 
 
 @router.post("/admins", response_model=AdminOut, status_code=201)
@@ -273,6 +397,8 @@ async def create_admin(
     existing = await db.execute(select(Admin).where(Admin.email == payload.email))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
+
+    _validate_password_strength(payload.password)
 
     admin = Admin(
         email=payload.email,
@@ -305,6 +431,7 @@ async def change_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if new_pw == current_pw:
         raise HTTPException(status_code=400, detail="New password must be different from current password")
+    _validate_password_strength(new_pw)
 
     current_admin.hashed_password = hash_password(new_pw)
     await db.commit()

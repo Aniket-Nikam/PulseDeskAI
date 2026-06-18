@@ -458,12 +458,9 @@ async def _check_blocked_domains(device, events, employee_id, now, db):
     ANY single match triggers an alert — no minimum time threshold.
     Has its own 1-hour cooldown independent from the distraction-category check.
     """
-    from app.api.v1.routes.blocker import _blocked_domains
+    from app.services import blocklist_store
 
-    if not _blocked_domains:
-        return
-
-    active_rules = [v for v in _blocked_domains.values() if v.get("is_active")]
+    active_rules = await blocklist_store.get_active_rules(db)
     if not active_rules:
         return
 

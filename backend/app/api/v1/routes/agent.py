@@ -27,10 +27,19 @@ from app.services.ws_broadcaster import broadcast_employee_update
 from app.services.scoring import compute_session_score
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.security import device_token_lookup_values
 from app.core.rate_limit import enforce_rate_limit
+from app.api.v1.routes.auth import require_admin_read, require_admin_write
+from app.services.ws_broadcaster import stream_manager
 
 router = APIRouter(tags=["agent"])
 log = get_logger("agent")
+
+class StreamConfigUpdate(BaseModel):
+    enabled: bool
+    fps: Optional[float] = None
+    quality: Optional[int] = None
+
 
 
 class DeviceInfoPatchRequest(BaseModel):
@@ -42,7 +51,10 @@ class DeviceInfoPatchRequest(BaseModel):
 
 
 async def _get_approved_device(token: str, db: AsyncSession) -> Device:
-    result = await db.execute(select(Device).where(Device.device_token == token))
+    lookup_values = device_token_lookup_values(token)
+    if not lookup_values:
+        raise HTTPException(status_code=401, detail="Unknown device token")
+    result = await db.execute(select(Device).where(Device.device_token.in_(lookup_values)))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=401, detail="Unknown device token")
@@ -79,11 +91,86 @@ async def heartbeat(
     if hasattr(payload, 'agent_version') and payload.agent_version:
         device.agent_version = payload.agent_version
 
+    # Geofence evaluation
+    within_geofence = None
+    nearest_location_name = None
+
+    if payload.latitude is not None and payload.longitude is not None:
+        from app.services.attendance_service import list_locations
+        from app.services.geofence import find_nearest_location, haversine_distance
+
+        locations = await list_locations(db)
+        active_locs = [
+            {
+                "id": loc.id,
+                "name": loc.name,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+                "radius_meters": loc.radius_meters,
+            }
+            for loc in locations
+            if loc.is_active
+        ]
+
+        nearest = find_nearest_location(payload.latitude, payload.longitude, active_locs)
+        if nearest:
+            within_geofence = True
+            nearest_location_name = nearest["name"]
+        else:
+            within_geofence = False
+            if active_locs:
+                closest_loc = min(
+                    active_locs,
+                    key=lambda l: haversine_distance(payload.latitude, payload.longitude, l["latitude"], l["longitude"])
+                )
+                nearest_location_name = closest_loc["name"]
+
+    # Auto-mark attendance
+    from app.services.attendance_service import get_attendance_settings, check_in
+    from app.models import AttendanceRecord
+    from sqlalchemy import cast, Date
+
+    settings_att = await get_attendance_settings(db)
+    if settings_att and settings_att.is_configured:
+        now = datetime.now(timezone.utc)
+        today_date = now.date()
+
+        # Check if already checked in today (cast to Date for robust comparison)
+        res_att = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.employee_id == device.employee_id,
+                cast(AttendanceRecord.date, Date) == today_date,
+            )
+        )
+        existing_record = res_att.scalar_one_or_none()
+
+        if not existing_record or not existing_record.check_in_time:
+            # Auto-mark check-in if within geofence OR if remote check-in is allowed
+            should_attempt = within_geofence or settings_att.allow_remote_checkin
+            if should_attempt:
+                try:
+                    result = await check_in(
+                        db=db,
+                        employee_id=device.employee_id,
+                        latitude=payload.latitude,
+                        longitude=payload.longitude,
+                    )
+                    if "error" in result:
+                        log.info(f"Auto check-in skipped: {result['error']}", employee_id=str(device.employee_id))
+                    else:
+                        log.info("Auto check-in success", employee_id=str(device.employee_id), status=result.get("status"))
+                except Exception as e:
+                    log.warning(f"Auto check-in failed: {e}", employee_id=str(device.employee_id))
+            else:
+                log.debug("Auto check-in skipped: not in geofence and remote check-in disabled", employee_id=str(device.employee_id))
+
     await db.commit()
     return HeartbeatOut(
         status="ok",
         server_time=datetime.now(timezone.utc),
         screenshot_required=False,
+        within_geofence=within_geofence,
+        nearest_location_name=nearest_location_name,
     )
 
 
@@ -101,7 +188,10 @@ async def update_device_info(
         custom_identifier=payload.device_token,
     )
     token = payload.device_token
-    result = await db.execute(select(Device).where(Device.device_token == token))
+    lookup_values = device_token_lookup_values(token)
+    if not lookup_values:
+        raise HTTPException(status_code=401, detail="Unknown device")
+    result = await db.execute(select(Device).where(Device.device_token.in_(lookup_values)))
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=401, detail="Unknown device")
@@ -155,6 +245,50 @@ async def start_session(
         started_at=datetime.now(timezone.utc),
     )
     db.add(session)
+
+    # Increment check-in counter if starting during work hours subsequent times
+    try:
+        from app.models import Employee, AttendanceRecord
+        from sqlalchemy import cast, Date, func
+        import zoneinfo
+
+        emp_res = await db.execute(select(Employee).where(Employee.id == device.employee_id))
+        emp = emp_res.scalar_one_or_none()
+        if emp:
+            work_end_hr = getattr(emp, "work_end_hour", 18)
+            tz_str = getattr(emp, "timezone", "UTC")
+            try:
+                tz = zoneinfo.ZoneInfo(tz_str)
+            except Exception:
+                tz = timezone.utc
+
+            now_utc = datetime.now(timezone.utc)
+            local_now = now_utc.astimezone(tz)
+            today_date = local_now.date()
+
+            res_att = await db.execute(
+                select(AttendanceRecord).where(
+                    AttendanceRecord.employee_id == device.employee_id,
+                    cast(AttendanceRecord.date, Date) == today_date,
+                )
+            )
+            record = res_att.scalar_one_or_none()
+            if record:
+                if local_now.hour < work_end_hr:
+                    today_start_utc = datetime(today_date.year, today_date.month, today_date.day, tzinfo=tz).astimezone(timezone.utc)
+                    sess_count_res = await db.execute(
+                        select(func.count(WorkSession.id)).where(
+                            WorkSession.employee_id == device.employee_id,
+                            WorkSession.started_at >= today_start_utc,
+                        )
+                    )
+                    session_count = sess_count_res.scalar() or 0
+                    if session_count > 0:
+                        record.check_in_count = (record.check_in_count or 1) + 1
+                        log.info("check_in_count_incremented", employee_id=str(device.employee_id), count=record.check_in_count)
+    except Exception as e:
+        log.warning(f"failed_to_increment_checkin_count: {e}")
+
     await db.commit()
     await db.refresh(session)
     log.info("session_started", session_id=str(session.id))
@@ -188,6 +322,30 @@ async def end_session(
     session.ended_at = now
     session.duration_seconds = int((now - session.started_at).total_seconds())
     session.productivity_score = compute_session_score(session)
+
+    # Automatically check out employee if session ends after work hours
+    try:
+        from app.models import Employee, AttendanceRecord
+        from app.services.attendance_service import check_out
+        import zoneinfo
+
+        emp_res = await db.execute(select(Employee).where(Employee.id == device.employee_id))
+        emp = emp_res.scalar_one_or_none()
+        if emp:
+            work_end_hr = getattr(emp, "work_end_hour", 18)
+            tz_str = getattr(emp, "timezone", "UTC")
+            try:
+                tz = zoneinfo.ZoneInfo(tz_str)
+            except Exception:
+                tz = timezone.utc
+
+            local_now = now.astimezone(tz)
+            if local_now.hour >= work_end_hr:
+                checkout_res = await check_out(db, device.employee_id, latitude=None, longitude=None, bypass_location=True)
+                log.info("agent_shutdown_checkout_attempted", employee_id=str(device.employee_id), result=checkout_res)
+    except Exception as e:
+        log.warning(f"failed_to_checkout_on_agent_shutdown: {e}")
+
     await db.commit()
     return {"status": "closed"}
 
@@ -254,6 +412,13 @@ async def ingest_events(
 
     for ev in payload.events:
         category = categorize_app(ev.active_app) if ev.active_app else None
+        if category == "other" and ev.active_app:
+            from app.services.categorizer import _smart_categories_cache, trigger_smart_categorization
+            if ev.active_app in _smart_categories_cache:
+                category = _smart_categories_cache[ev.active_app]
+            else:
+                trigger_smart_categorization(ev.active_app, ev.active_window_title)
+
         event_objects.append(ActivityEvent(
             device_id=device.id,
             employee_id=device.employee_id,
@@ -337,3 +502,31 @@ async def ingest_events(
 
 
 # NOTE: _compute_score has been consolidated into app.services.scoring.compute_session_score
+
+
+@router.get("/agent/stream-config/{employee_id}")
+async def get_stream_config(
+    employee_id: str,
+    admin=Depends(require_admin_read),
+):
+    """Retrieve the current screen streaming configuration for an employee."""
+    return stream_manager.get_stream_config(employee_id)
+
+
+@router.put("/agent/stream-config/{employee_id}")
+async def update_stream_config(
+    employee_id: str,
+    payload: StreamConfigUpdate,
+    admin=Depends(require_admin_write),
+):
+    """Update screen streaming configurations (enabled, fps, quality) for an employee."""
+    fps = payload.fps if payload.fps is not None else 24.0
+    quality = payload.quality if payload.quality is not None else 50
+    await stream_manager.set_stream_config(
+        employee_id=employee_id,
+        enabled=payload.enabled,
+        fps=fps,
+        quality=quality,
+    )
+    return {"status": "success", "config": stream_manager.get_stream_config(employee_id)}
+

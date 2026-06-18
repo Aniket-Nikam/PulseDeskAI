@@ -248,7 +248,7 @@ async def get_completion_stats(
         select(func.count(ActionItem.id)).where(
             and_(
                 ActionItem.employee_id == employee_id,
-                ActionItem.is_completed == True
+                ActionItem.is_completed
             )
         )
     )

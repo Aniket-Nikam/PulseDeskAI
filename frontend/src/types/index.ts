@@ -3,7 +3,7 @@ export interface Admin {
   id: string;
   email: string;
   full_name: string;
-  role: "super_admin" | "admin" | "manager";
+  role: "super_admin" | "admin" | "manager" | "employee";
   is_active: boolean;
   last_login: string | null;
   created_at: string;
@@ -206,4 +206,16 @@ export interface WsAnomalyAlert {
   };
 }
 
-export type WsMessage = WsEmployeeUpdate | WsAnomalyAlert;
+export interface WsBreakAlert {
+  type: "break_alert";
+  data: {
+    employee_id: string;
+    employee_name: string;
+    elapsed_minutes: number;
+    allowed_minutes: number;
+    description: string;
+    detected_at: string;
+  };
+}
+
+export type WsMessage = WsEmployeeUpdate | WsAnomalyAlert | WsBreakAlert;

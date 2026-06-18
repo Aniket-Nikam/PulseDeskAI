@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.git
+screenshots/
+logs/
+*.log
+alembic/versions/__pycache__/
+stderr.log
+stdout.log

@@ -2,7 +2,8 @@
 Website Blocker System
 Admin defines blocked domains → agent enforces them → violations logged as anomalies.
 
-This is rule-based, no ML. Agent checks active window title + app name against blocklist.
+All rules are now persisted in the `blocked_site_rules` database table.
+The old in-memory _blocked_domains dict has been removed — rules survive restarts.
 """
 
 import uuid
@@ -19,7 +20,10 @@ from app.api.v1.routes.auth import require_admin_read, require_admin_write
 from app.core.logging import get_logger
 from app.core.config import settings
 from app.core.rate_limit import enforce_rate_limit
+from app.core.agent_auth import verify_agent_request_signature
+from app.core.security import device_token_lookup_values
 from app.core.audit import log_admin_action
+from app.services import blocklist_store
 from pydantic import BaseModel, field_validator
 
 router = APIRouter(prefix="/blocker", tags=["website-blocker"])
@@ -47,8 +51,10 @@ def _domain_matches(rule_domain: str, reported_domain: str) -> bool:
     return reported == rule or reported.endswith(f".{rule}") or rule in reported
 
 
-def _find_block_rule(domain: str) -> Optional[dict]:
-    for entry in _blocked_domains.values():
+async def _find_block_rule(domain: str, db: AsyncSession) -> Optional[dict]:
+    """Find a matching block rule from the database."""
+    rules = await blocklist_store.get_active_rules(db)
+    for entry in rules:
         if _domain_matches(entry.get("domain", ""), domain):
             return entry
     return None
@@ -193,120 +199,74 @@ class BlockViolation(BaseModel):
     current_url: Optional[str] = None
 
 
-# ─── In-memory store (use DB table in production) ─────────────────────────────
-
-_blocked_domains: dict[str, dict] = {}
-
-# Pre-loaded default blocks for common distractions
-DEFAULT_BLOCKS = [
-    {"domain": "facebook.com", "reason": "Social media — not work related", "category": "social", "severity": "low"},
-    {"domain": "instagram.com", "reason": "Social media — not work related", "category": "social", "severity": "low"},
-    {"domain": "twitter.com", "reason": "Social media — not work related", "category": "social", "severity": "low"},
-    {"domain": "tiktok.com", "reason": "Social media — not work related", "category": "social", "severity": "low"},
-    {"domain": "reddit.com", "reason": "Social media / forums", "category": "social", "severity": "low"},
-    {"domain": "youtube.com", "reason": "Video streaming", "category": "streaming", "severity": "medium"},
-    {"domain": "netflix.com", "reason": "Video streaming", "category": "streaming", "severity": "high"},
-    {"domain": "twitch.tv", "reason": "Gaming / streaming", "category": "gaming", "severity": "high"},
-    {"domain": "steam.com", "reason": "Gaming platform", "category": "gaming", "severity": "high"},
-]
-
-# Auto-load defaults on startup so the blocklist is never empty
-def _auto_load_defaults():
-    for block in DEFAULT_BLOCKS:
-        domain_id = str(uuid.uuid4())
-        _blocked_domains[domain_id] = {
-            "id": domain_id,
-            "domain": block["domain"],
-            "reason": block["reason"],
-            "category": block["category"],
-            "severity": block["severity"],
-            "applies_to_all": True,
-            "department_id": None,
-            "employee_id": None,
-            "is_active": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "violation_count": 0,
-        }
-
-_auto_load_defaults()
-log.info(f"blocker_defaults_loaded: {len(_blocked_domains)} domains")
-
-
-
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
 @router.get("/domains", response_model=List[dict])
-async def list_blocked_domains(admin=Depends(require_admin_read)):
-    """List all blocked domains."""
-    return list(_blocked_domains.values())
+async def list_blocked_domains(
+    admin=Depends(require_admin_read),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all blocked domains from the database."""
+    return await blocklist_store.get_all_rules(db)
 
 
 @router.post("/domains", status_code=201)
 async def add_blocked_domain(
     payload: BlockedDomain,
     admin=Depends(require_admin_write),
+    db: AsyncSession = Depends(get_db),
 ):
-    domain_id = str(uuid.uuid4())
-    domain = payload.domain
+    try:
+        rule = await blocklist_store.add_rule(
+            domain=payload.domain,
+            reason=payload.reason,
+            category=payload.category,
+            severity=payload.severity,
+            applies_to_all=payload.applies_to_all,
+            department_id=payload.department_id,
+            employee_id=payload.employee_id,
+            admin_id=admin.id,
+            db=db,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
-    _blocked_domains[domain_id] = {
-        "id": domain_id,
-        "domain": domain,
-        "reason": payload.reason,
-        "category": payload.category,
-        "severity": payload.severity,
-        "applies_to_all": payload.applies_to_all,
-        "department_id": payload.department_id,
-        "employee_id": payload.employee_id,
-        "is_active": True,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "violation_count": 0,
-    }
-    log.info("domain_blocked", domain=domain, by=str(admin.id))
-    log_admin_action("domain_blocked", admin_id=str(admin.id), domain=domain)
-    return _blocked_domains[domain_id]
+    log.info("domain_blocked", domain=payload.domain, by=str(admin.id))
+    log_admin_action("domain_blocked", admin_id=str(admin.id), domain=payload.domain)
+    return rule
 
 
 @router.delete("/domains/{domain_id}", status_code=204)
-async def remove_blocked_domain(domain_id: str, admin=Depends(require_admin_write)):
-    if domain_id not in _blocked_domains:
+async def remove_blocked_domain(
+    domain_id: str,
+    admin=Depends(require_admin_write),
+    db: AsyncSession = Depends(get_db),
+):
+    if not await blocklist_store.remove_rule(domain_id, db):
         raise HTTPException(status_code=404, detail="Domain not found")
-    del _blocked_domains[domain_id]
     log_admin_action("domain_removed", admin_id=str(admin.id), domain_id=domain_id)
 
 
 @router.patch("/domains/{domain_id}/toggle")
-async def toggle_domain(domain_id: str, admin=Depends(require_admin_write)):
-    if domain_id not in _blocked_domains:
+async def toggle_domain(
+    domain_id: str,
+    admin=Depends(require_admin_write),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await blocklist_store.toggle_rule(domain_id, db)
+    if result is None:
         raise HTTPException(status_code=404, detail="Domain not found")
-    _blocked_domains[domain_id]["is_active"] = not _blocked_domains[domain_id]["is_active"]
     log_admin_action("domain_toggled", admin_id=str(admin.id), domain_id=domain_id)
-    return _blocked_domains[domain_id]
+    return result
 
 
 @router.post("/load-defaults", status_code=201)
-async def load_default_blocks(admin=Depends(require_admin_write)):
+async def load_default_blocks(
+    admin=Depends(require_admin_write),
+    db: AsyncSession = Depends(get_db),
+):
     """Load the default block list (common distractions)."""
-    added = 0
-    existing_domains = {v["domain"] for v in _blocked_domains.values()}
-    for block in DEFAULT_BLOCKS:
-        domain = block["domain"]
-        if domain not in existing_domains:
-            domain_id = str(uuid.uuid4())
-            _blocked_domains[domain_id] = {
-                "id": domain_id,
-                "domain": domain,
-                "reason": block["reason"],
-                "category": block["category"],
-                "severity": block["severity"],
-                "applies_to_all": True,
-                "department_id": None,
-                "employee_id": None,
-                "is_active": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "violation_count": 0,
-            }
-            added += 1
+    added = await blocklist_store.load_defaults(admin.id, db)
     log_admin_action("domain_defaults_loaded", admin_id=str(admin.id), added=added)
     return {"added": added, "message": f"Loaded {added} default blocks"}
 
@@ -333,18 +293,21 @@ async def get_active_blocklist(
         window_seconds=60,
         custom_identifier=resolved_token,
     )
+    await verify_agent_request_signature(request, resolved_token)
 
     result = await db.execute(
         select(Device).where(
-            Device.device_token == resolved_token,
+            Device.device_token.in_(device_token_lookup_values(resolved_token)),
             Device.status == DeviceStatus.approved,
         )
     )
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=401, detail="Unknown device")
+    if not device.monitoring_consent_given:
+        raise HTTPException(status_code=403, detail="Monitoring consent required")
 
-    active = [v["domain"] for v in _blocked_domains.values() if v["is_active"]]
+    active = await blocklist_store.get_active_domains(db)
     return {"domains": active, "count": len(active)}
 
 
@@ -361,17 +324,20 @@ async def report_violation(payload: BlockViolation, request: Request, db: AsyncS
         window_seconds=60,
         custom_identifier=payload.device_token,
     )
+    await verify_agent_request_signature(request, payload.device_token)
 
     # Validate device
     result = await db.execute(
         select(Device).where(
-            Device.device_token == payload.device_token,
+            Device.device_token.in_(device_token_lookup_values(payload.device_token)),
             Device.status == DeviceStatus.approved,
         )
     )
     device = result.scalar_one_or_none()
     if not device:
         raise HTTPException(status_code=401, detail="Unknown device")
+    if not device.monitoring_consent_given:
+        raise HTTPException(status_code=403, detail="Monitoring consent required")
 
     employee_result = await db.execute(
         select(Employee, Department.name.label("department_name"))
@@ -383,9 +349,11 @@ async def report_violation(payload: BlockViolation, request: Request, db: AsyncS
     department_name = employee_row[1] if employee_row else None
 
     reported_domain = _normalize_domain(payload.domain)
-    matched_rule = _find_block_rule(reported_domain)
+    matched_rule = await _find_block_rule(reported_domain, db)
+
+    # Increment violation counter in DB
     if matched_rule:
-        matched_rule["violation_count"] = int(matched_rule.get("violation_count", 0) or 0) + 1
+        await blocklist_store.increment_violation_count(reported_domain, db)
 
     severity = (matched_rule or {}).get("severity", "high")
     category = (matched_rule or {}).get("category")
@@ -504,7 +472,7 @@ async def get_violation_summary(
 
         for domain in domains:
             detail = _domain_detail(metadata, domain)
-            rule = _find_block_rule(domain) or {}
+            rule = await _find_block_rule(domain, db) or {}
             entry = summary.setdefault(
                 domain,
                 {

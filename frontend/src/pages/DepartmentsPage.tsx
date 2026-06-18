@@ -4,6 +4,7 @@ import { Building2, Plus } from "lucide-react";
 import { analyticsApi, departmentsApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import type { Department, DepartmentComparisonRow } from "../types";
+import { Dialog } from "../components/ui/Dialog";
 import { formatSeconds, productivityColor, todayISO } from "../utils/format";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
@@ -88,7 +89,7 @@ export function DepartmentsPage() {
                 </div>
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => { if (confirm(`Delete ${d.name}?`)) deleteDept.mutate(d.id); }}
+                  onClick={async () => { if (await Dialog.confirm(`Delete ${d.name}?`, "Delete Department")) deleteDept.mutate(d.id); }}
                   style={{ padding: "2px 6px", fontSize: 11 }}
                 >
                   ✕

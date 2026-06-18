@@ -14,7 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, ConflictError
 from app.core.logging import get_logger
-from app.models import Employee, Department, Device, DeviceStatus
+from app.models import (
+    Employee, Department, Device, DeviceStatus, WorkSession, ActivityEvent,
+    AppUsageDaily, AnomalyLog, ScreenshotPolicy, Screenshot, DailySummary,
+    ActionItem, AdminAuditLog
+)
 from app.schemas import EmployeeCreate, EmployeeUpdate, EmployeeOut, DepartmentCreate, DepartmentOut
 from app.services.online_tracker import is_employee_online
 
@@ -175,3 +179,27 @@ async def deactivate_employee(employee_id: uuid.UUID, db: AsyncSession) -> None:
         raise NotFoundError("Employee not found")
     employee.is_active = False
     await db.commit()
+
+
+async def delete_employee_permanently(employee_id: uuid.UUID, db: AsyncSession) -> None:
+    from sqlalchemy import delete
+    result = await db.execute(select(Employee).where(Employee.id == employee_id))
+    employee = result.scalar_one_or_none()
+    if not employee:
+        raise NotFoundError("Employee not found")
+
+    # Manually cascade delete all related records
+    await db.execute(delete(AdminAuditLog).where(AdminAuditLog.target_employee_id == employee_id))
+    await db.execute(delete(ActionItem).where(ActionItem.employee_id == employee_id))
+    await db.execute(delete(AnomalyLog).where(AnomalyLog.employee_id == employee_id))
+    await db.execute(delete(Screenshot).where(Screenshot.employee_id == employee_id))
+    await db.execute(delete(ScreenshotPolicy).where(ScreenshotPolicy.employee_id == employee_id))
+    await db.execute(delete(ActivityEvent).where(ActivityEvent.employee_id == employee_id))
+    await db.execute(delete(WorkSession).where(WorkSession.employee_id == employee_id))
+    await db.execute(delete(AppUsageDaily).where(AppUsageDaily.employee_id == employee_id))
+    await db.execute(delete(DailySummary).where(DailySummary.employee_id == employee_id))
+    await db.execute(delete(Device).where(Device.employee_id == employee_id))
+    await db.execute(delete(Employee).where(Employee.id == employee_id))
+    
+    await db.commit()
+

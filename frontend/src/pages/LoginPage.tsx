@@ -25,9 +25,9 @@ export function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      await authApi.login(email, password);
+      const loginData = await authApi.login(email, password);
       const me = await authApi.me();
-      setAuth(me);
+      setAuth(me, loginData.access_token);
       navigate("/", { replace: true });
     } catch (err: any) {
       const s = err?.response?.status;

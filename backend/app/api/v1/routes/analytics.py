@@ -6,24 +6,20 @@ Scoring consolidated into app.services.scoring.
 
 import uuid
 from datetime import datetime, date, timedelta, timezone
-from typing import Optional, List
+from typing import Optional
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from app.db.session import get_db
 from app.models import (
     ActivityEvent, WorkSession, DailySummary,
     Employee, Department, Device, DeviceStatus, AnomalyLog, ActivityType,
 )
-from app.services.online_tracker import is_device_online, get_employee_last_event
-from app.services.categorizer import categorize_app, is_productive_category
+from app.services.online_tracker import is_device_online
 from app.services.scoring import compute_score_from_events
-from app.services import analytics_service
-from app.schemas import PaginatedResponse, AnomalyOut
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.audit import log_admin_action
 from app.api.v1.routes.auth import require_admin_read, require_admin_write
@@ -44,64 +40,99 @@ async def get_live_overview(
     result = await db.execute(
         select(Employee, Department.name.label("dept_name"))
         .outerjoin(Department, Employee.department_id == Department.id)
-        .where(Employee.is_active == True)
+        .where(Employee.is_active)
         .order_by(Employee.full_name)
     )
     rows = result.all()
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    if not rows:
+        return []
+
+    employee_ids = [emp.id for emp, _ in rows]
+
+    from zoneinfo import ZoneInfo
+    ist_tz = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime.now(ist_tz)
+    today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # 1. Bulk fetch latest activity event per employee using Postgres DISTINCT ON
+    last_events_query = (
+        select(ActivityEvent)
+        .where(ActivityEvent.employee_id.in_(employee_ids))
+        .distinct(ActivityEvent.employee_id)
+        .order_by(ActivityEvent.employee_id, ActivityEvent.timestamp.desc())
+    )
+    last_events_result = await db.execute(last_events_query)
+    last_events_map = {e.employee_id: e for e in last_events_result.scalars().all()}
+
+    # 2. Bulk fetch all approved devices for active employees
+    devices_query = (
+        select(Device)
+        .where(Device.employee_id.in_(employee_ids), Device.status == DeviceStatus.approved)
+        .order_by(Device.employee_id, Device.last_heartbeat.desc().nulls_last())
+    )
+    devices_result = await db.execute(devices_query)
+    devices = devices_result.scalars().all()
+    
+    # Group devices by employee
+    emp_devices = defaultdict(list)
+    for d in devices:
+        emp_devices[d.employee_id].append(d)
+
+    # 3. Bulk fetch active work sessions (where ended_at is null)
+    sessions_query = (
+        select(WorkSession)
+        .where(WorkSession.employee_id.in_(employee_ids), WorkSession.ended_at.is_(None))
+        .order_by(WorkSession.employee_id, WorkSession.started_at.desc())
+    )
+    sessions_result = await db.execute(sessions_query)
+    # Map to the latest active session per employee
+    emp_sessions = {}
+    for s in sessions_result.scalars().all():
+        if s.employee_id not in emp_sessions:
+            emp_sessions[s.employee_id] = s
+
+    # 4. Bulk fetch today's activity events to compute active seconds and productivity scores in memory
+    today_events_query = (
+        select(ActivityEvent)
+        .where(ActivityEvent.employee_id.in_(employee_ids), ActivityEvent.timestamp >= today_start)
+        .order_by(ActivityEvent.employee_id, ActivityEvent.timestamp.desc())
+    )
+    today_events_result = await db.execute(today_events_query)
+    
+    # Group today's events by employee (limit to 500 per employee to match previous behavior)
+    emp_today_events = defaultdict(list)
+    for e in today_events_result.scalars().all():
+        if len(emp_today_events[e.employee_id]) < 500:
+            emp_today_events[e.employee_id].append(e)
+
     out = []
-
     for employee, dept_name in rows:
-        last_event = await get_employee_last_event(employee.id, db)
+        emp_id = employee.id
+        last_event = last_events_map.get(emp_id)
 
-        today_active_result = await db.execute(
-            select(func.sum(ActivityEvent.sample_duration_seconds)).where(
-                ActivityEvent.employee_id == employee.id,
-                ActivityEvent.activity_type == ActivityType.active,
-                ActivityEvent.timestamp >= today_start,
-            )
-        )
-        today_active = int(today_active_result.scalar() or 0)
+        # Get devices for this employee
+        devices_list = emp_devices.get(emp_id, [])
+        device_count = len(devices_list)
+        # The primary active device is the first one in the list (ordered by last_heartbeat desc)
+        primary_device = devices_list[0] if devices_list else None
 
-        today_events_result = await db.execute(
-            select(ActivityEvent).where(
-                ActivityEvent.employee_id == employee.id,
-                ActivityEvent.timestamp >= today_start,
-            ).limit(500)
-        )
-        today_events = today_events_result.scalars().all()
-        prod_score = compute_score_from_events(today_events) if today_events else None
+        # Active session
+        session = emp_sessions.get(emp_id)
 
-        device_result = await db.execute(
-            select(Device).where(
-                Device.employee_id == employee.id,
-                Device.status == DeviceStatus.approved,
-            ).order_by(Device.last_heartbeat.desc()).limit(1)
+        # Compute today's active seconds and productivity score from our grouped in-memory events
+        today_events = emp_today_events.get(emp_id, [])
+        today_active = sum(
+            e.sample_duration_seconds
+            for e in today_events
+            if e.activity_type == ActivityType.active
         )
-        device = device_result.scalar_one_or_none()
-
-        session_result = await db.execute(
-            select(WorkSession).where(
-                WorkSession.employee_id == employee.id,
-                WorkSession.ended_at.is_(None),
-            ).order_by(WorkSession.started_at.desc()).limit(1)
-        )
-        session = session_result.scalar_one_or_none()
-
-        # Device info for display
-        device_count_result = await db.execute(
-            select(func.count(Device.id)).where(
-                Device.employee_id == employee.id,
-                Device.status == DeviceStatus.approved,
-            )
-        )
-        device_count = device_count_result.scalar() or 0
+        prod_score = compute_score_from_events(today_events) if today_events else 0.0
 
         out.append({
-            "employee_id": str(employee.id),
+            "employee_id": str(emp_id),
             "employee_name": employee.full_name,
             "department_name": dept_name,
-            "is_online": is_device_online(device) if device else False,
+            "is_online": is_device_online(primary_device) if primary_device else False,
             "activity_type": last_event.activity_type if last_event else None,
             "active_app": last_event.active_app if last_event else None,
             "active_window_title": last_event.active_window_title if last_event else None,
@@ -134,7 +165,7 @@ async def get_leaderboard(
     emp_result = await db.execute(
         select(Employee, Department.name.label("dept_name"))
         .outerjoin(Department, Employee.department_id == Department.id)
-        .where(Employee.is_active == True)
+        .where(Employee.is_active)
     )
     employees = emp_result.all()
 
@@ -437,19 +468,71 @@ async def get_dept_comparison(
     day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
 
+    emp_result = await db.execute(
+        select(Employee).where(Employee.is_active)
+    )
+    employees = emp_result.scalars().all()
+    if not employees:
+        dept_result = await db.execute(select(Department))
+        return [
+            {
+                "department_id": str(d.id),
+                "department_name": d.name,
+                "employee_count": 0,
+                "online_count": 0,
+                "avg_productivity_score": 0.0,
+                "avg_active_seconds": 0,
+                "avg_focus_sessions": 0.0,
+                "avg_app_switches": 0.0,
+            }
+            for d in dept_result.scalars().all()
+        ]
+
+    employee_ids = [emp.id for emp in employees]
+
+    # Group active employees by department_id
+    dept_employees = defaultdict(list)
+    for emp in employees:
+        if emp.department_id:
+            dept_employees[emp.department_id].append(emp)
+
+    # 1. Bulk fetch all events for the target date for all active employees
+    events_result = await db.execute(
+        select(ActivityEvent)
+        .where(
+            ActivityEvent.employee_id.in_(employee_ids),
+            ActivityEvent.timestamp >= day_start,
+            ActivityEvent.timestamp < day_end,
+        )
+        .order_by(ActivityEvent.employee_id, ActivityEvent.timestamp.desc())
+    )
+    
+    # Group events by employee_id in memory (limit to 300 per employee to match previous behavior)
+    emp_events = defaultdict(list)
+    for e in events_result.scalars().all():
+        if len(emp_events[e.employee_id]) < 300:
+            emp_events[e.employee_id].append(e)
+
+    # 2. Bulk fetch approved devices for all active employees
+    devices_result = await db.execute(
+        select(Device)
+        .where(Device.employee_id.in_(employee_ids), Device.status == DeviceStatus.approved)
+        .order_by(Device.employee_id, Device.last_heartbeat.desc().nulls_last())
+    )
+    # Map each employee to their primary device (latest heartbeat)
+    emp_primary_device = {}
+    for d in devices_result.scalars().all():
+        if d.employee_id not in emp_primary_device:
+            emp_primary_device[d.employee_id] = d
+
+    # Fetch departments
     dept_result = await db.execute(select(Department))
     departments = dept_result.scalars().all()
 
     out = []
     for dept in departments:
-        emp_result = await db.execute(
-            select(Employee).where(
-                Employee.department_id == dept.id,
-                Employee.is_active == True,
-            )
-        )
-        employees = emp_result.scalars().all()
-        if not employees:
+        dept_emps = dept_employees.get(dept.id, [])
+        if not dept_emps:
             out.append({
                 "department_id": str(dept.id),
                 "department_name": dept.name,
@@ -457,38 +540,26 @@ async def get_dept_comparison(
                 "online_count": 0,
                 "avg_productivity_score": 0.0,
                 "avg_active_seconds": 0,
+                "avg_focus_sessions": 0.0,
+                "avg_app_switches": 0.0,
             })
             continue
 
         scores, actives, online_count = [], [], 0
-
-        for emp in employees:
-            ev_result = await db.execute(
-                select(ActivityEvent).where(
-                    ActivityEvent.employee_id == emp.id,
-                    ActivityEvent.timestamp >= day_start,
-                    ActivityEvent.timestamp < day_end,
-                ).limit(300)
-            )
-            events = ev_result.scalars().all()
+        for emp in dept_emps:
+            events = emp_events.get(emp.id, [])
             if events:
                 scores.append(compute_score_from_events(events))
                 actives.append(sum(e.sample_duration_seconds for e in events if e.activity_type == ActivityType.active))
 
-            dev_result = await db.execute(
-                select(Device).where(
-                    Device.employee_id == emp.id,
-                    Device.status == DeviceStatus.approved,
-                ).order_by(Device.last_heartbeat.desc()).limit(1)
-            )
-            dev = dev_result.scalar_one_or_none()
+            dev = emp_primary_device.get(emp.id)
             if is_device_online(dev):
                 online_count += 1
 
         out.append({
             "department_id": str(dept.id),
             "department_name": dept.name,
-            "employee_count": len(employees),
+            "employee_count": len(dept_emps),
             "online_count": online_count,
             "avg_productivity_score": round(sum(scores) / len(scores), 1) if scores else 0.0,
             "avg_active_seconds": int(sum(actives) / len(actives)) if actives else 0,
@@ -559,3 +630,61 @@ async def recompute(admin=Depends(require_admin_write)):
     count = await compute_daily_summaries()
     log_admin_action("daily_summaries_recomputed", admin_id=str(admin.id), employees_computed=count)
     return {"status": "done", "employees_computed": count}
+
+
+@router.get("/weekly-summaries")
+async def get_weekly_summaries(
+    admin=Depends(require_admin_read),
+    db: AsyncSession = Depends(get_db)
+):
+    from app.models import WeeklySummary
+    result = await db.execute(select(WeeklySummary).order_by(WeeklySummary.week_start.desc()))
+    summaries = result.scalars().all()
+    return [
+        {
+            "id": str(s.id),
+            "week_start": s.week_start.strftime("%Y-%m-%d"),
+            "week_end": s.week_end.strftime("%Y-%m-%d"),
+            "summary_text": s.summary_text,
+            "metrics": s.metrics_json,
+            "created_at": s.created_at.isoformat()
+        }
+        for s in summaries
+    ]
+
+@router.post("/weekly-summaries/trigger")
+async def trigger_weekly_summary(
+    payload: dict,
+    admin=Depends(require_admin_write),
+    db: AsyncSession = Depends(get_db)
+):
+    date_str = payload.get("date")
+    if not date_str:
+        raise HTTPException(status_code=400, detail="Missing date in payload.")
+    
+    try:
+        ref_date = date.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    # Calculate Monday to Sunday
+    start_monday = ref_date - timedelta(days=ref_date.weekday())
+    end_sunday = start_monday + timedelta(days=6)
+
+    week_start = datetime.combine(start_monday, datetime.min.time(), tzinfo=timezone.utc)
+    week_end = datetime.combine(end_sunday, datetime.max.time(), tzinfo=timezone.utc)
+
+    from app.services.weekly_summary_service import generate_weekly_summary
+    summary = await generate_weekly_summary(week_start, week_end, db)
+    if not summary:
+        raise HTTPException(status_code=404, detail="No telemetry data found for the selected week range.")
+        
+    return {
+        "id": str(summary.id),
+        "week_start": summary.week_start.strftime("%Y-%m-%d"),
+        "week_end": summary.week_end.strftime("%Y-%m-%d"),
+        "summary_text": summary.summary_text,
+        "metrics": summary.metrics_json,
+        "created_at": summary.created_at.isoformat()
+    }
+

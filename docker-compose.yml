@@ -1,0 +1,70 @@
+# ─── PulseDesk Docker Compose ─────────────────────────────────────────────────
+# Start everything:  docker compose up -d
+# Reset Password:    RESET_ADMIN_EMAIL=admin@pulsedesk.com RESET_ADMIN_PASSWORD=your_new_password_here docker compose exec backend python reset_password.py
+# View logs:         docker compose logs -f
+# Stop:             docker compose down
+# Reset DB:          docker compose down -v   (deletes all data!)
+
+services:
+  # ── PostgreSQL Database ───────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pulsedesk
+      POSTGRES_USER: pulsedesk
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-pulsedesk_dev_password_change_me}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulsedesk -d pulsedesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend API (FastAPI) ──────────────────────────────────────────────────
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pulsedesk:${DB_PASSWORD:-pulsedesk_dev_password_change_me}@db:5432/pulsedesk
+      SECRET_KEY: ${SECRET_KEY:-please-change-this-to-a-64-char-random-string-in-production-now}
+      DEVICE_TOKEN_SECRET: ${DEVICE_TOKEN_SECRET:-please-change-this-device-secret-to-64-chars-minimum-right-now}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      ALLOW_INSECURE_DEFAULTS: ${ALLOW_INSECURE_DEFAULTS:-true}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      SCREENSHOT_QUERY_TOKEN_ENABLED: ${SCREENSHOT_QUERY_TOKEN_ENABLED:-false}
+      AGENT_SIGNATURE_REQUIRED: ${AGENT_SIGNATURE_REQUIRED:-true}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      AI_ENABLED: ${AI_ENABLED:-true}
+      ALLOW_ADMIN_CLI_RESET: ${ALLOW_ADMIN_CLI_RESET:-false}
+      AI_SCREENSHOT_ANALYSIS_ENABLED: ${AI_SCREENSHOT_ANALYSIS_ENABLED:-false}
+      DEBUG: ${DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: "${CORS_ORIGINS:-[\"http://localhost:3000\",\"http://localhost:5173\"]}"
+      TRUSTED_HOSTS: "${TRUSTED_HOSTS:-[\"localhost\",\"127.0.0.1\",\"backend\"]}"
+      SCREENSHOT_DIR: /app/screenshots
+    volumes:
+      - screenshots:/app/screenshots
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
+  # ── Frontend Dashboard (React + Nginx) ────────────────────────────────────
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+volumes:
+  pgdata:
+  screenshots:

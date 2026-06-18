@@ -8,6 +8,8 @@ import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Circle, Trash2, Filter } from "lucide-react";
 import { api } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
+import { Dialog } from "../components/ui/Dialog";
+import { EmployeeSearchDropdown } from "../components/ui/EmployeeSearchDropdown";
 
 interface Employee {
   id: string;
@@ -38,6 +40,7 @@ export function ActionItemsPage() {
   const [filterCompleted, setFilterCompleted] = useState<"all" | "pending" | "completed">("all");
   const [items, setItems] = useState<ActionItem[]>([]);
   const [loading, setLoading] = useState(true);
+
 
   // Fetch employees
   const { data: employees = [] } = useQuery<Employee[]>({
@@ -105,7 +108,7 @@ export function ActionItemsPage() {
 
   // Delete item
   const handleDelete = async (itemId: string) => {
-    if (!confirm("Delete this action item?")) return;
+    if (!await Dialog.confirm("Delete this action item?", "Delete Action Item")) return;
     try {
       await api.delete(`/actions/${itemId}`);
       setItems(prev => prev.filter(i => i.id !== itemId));
@@ -130,26 +133,11 @@ export function ActionItemsPage() {
           <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-tertiary)", textTransform: "uppercase", marginBottom: 8, display: "block" }}>
             Employee
           </label>
-          <select
-            value={selectedEmployee}
-            onChange={e => setSelectedEmployee(e.target.value)}
-            style={{
-              width: "100%",
-              padding: "10px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid var(--border-default)",
-              background: "var(--bg-secondary)",
-              color: "var(--text-primary)",
-              fontSize: 13.5,
-              cursor: "pointer",
-            }}
-          >
-            {employees.map(emp => (
-              <option key={emp.id} value={emp.id}>
-                {emp.full_name}
-              </option>
-            ))}
-          </select>
+          <EmployeeSearchDropdown
+            selectedId={selectedEmployee}
+            onChange={setSelectedEmployee}
+            width="100%"
+          />
         </div>
 
         {/* Filter buttons */}

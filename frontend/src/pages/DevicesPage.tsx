@@ -7,6 +7,7 @@ import { PageHeader } from "../components/ui/PageHeader";
 import { OnlineBadge } from "../components/ui/OnlineBadge";
 import type { Device } from "../types";
 import { formatDate, platformIcon } from "../utils/format";
+import { Dialog } from "../components/ui/Dialog";
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
   if (!axios.isAxiosError(error)) return fallback;
@@ -213,7 +214,7 @@ export function DevicesPage() {
                       {d.status === "approved" && (
                         <button
                           className="btn btn-sm btn-danger"
-                          onClick={() => { if (confirm("Revoke this device?")) revoke.mutate(d.id); }}
+                          onClick={async () => { if (await Dialog.confirm("Revoke this device?", "Revoke Device")) revoke.mutate(d.id); }}
                           disabled={revoke.isPending && revoke.variables === d.id}
                         >
                           <XCircle size={12} /> Revoke
@@ -223,7 +224,7 @@ export function DevicesPage() {
                         <button
                           className="btn btn-sm btn-ghost"
                           style={{ color: "var(--danger)" }}
-                          onClick={() => { if (confirm("Permanently delete this device?")) deleteDevice.mutate(d.id); }}
+                          onClick={async () => { if (await Dialog.confirm("Permanently delete this device? This cannot be undone.", "Delete Device")) deleteDevice.mutate(d.id); }}
                           disabled={deleteDevice.isPending && deleteDevice.variables === d.id}
                         >
                           <Trash2 size={12} /> Delete

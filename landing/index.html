@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PulseDesk — AI-Powered Self-Hosted Employee Monitoring & Productivity Analytics</title>
+  <meta name="description" content="Self-hosted employee monitoring with secure local storage and AI insights. Track productivity, block distractions, and safeguard your organization's data privacy.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    :root {
+      --bg: #030303;
+      --bg-card: #09090b;
+      --bg-hover: #141417;
+      --text: #f4f4f5;
+      --text-muted: #a1a1aa;
+      --text-dark: #52525b;
+      --accent-hsl: 247, 95%, 66%;
+      --accent: hsl(var(--accent-hsl));
+      --accent-glow: hsla(var(--accent-hsl), 0.15);
+      --accent-hover: hsl(247, 95%, 72%);
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-hover: rgba(255, 255, 255, 0.15);
+      --radius: 16px;
+      --radius-sm: 8px;
+    }
+    html {
+      scroll-behavior: smooth;
+    }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+    h1, h2, h3, h4 {
+      font-family: 'Outfit', sans-serif;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+    
+    /* ── BASE LAYOUT ───────────────────────── */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+      width: 100%;
+    }
+
+    /* ── NAVIGATION ────────────────────────── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      background: rgba(3, 3, 3, 0.7);
+      border-bottom: 1px solid var(--border);
+      height: 72px;
+      display: flex;
+      align-items: center;
+      transition: background 0.3s;
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+    }
+    .logo {
+      font-size: 22px;
+      font-weight: 800;
+      font-family: 'Outfit', sans-serif;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #fff 40%, var(--text-muted));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #3b82f6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      color: white;
+      -webkit-text-fill-color: initial;
+    }
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      align-items: center;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      font-size: 14px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover {
+      color: var(--text);
+    }
+
+    /* ── BUTTONS ───────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.25s ease;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(99, 102, 241, 0.25);
+    }
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(99, 102, 241, 0.45);
+    }
+    .btn-outline {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-outline:hover {
+      border-color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.03);
+      transform: translateY(-1px);
+    }
+    .btn-lg {
+      padding: 16px 36px;
+      font-size: 16px;
+      border-radius: 10px;
+    }
+
+    /* ── HERO SECTION ──────────────────────── */
+    .hero {
+      padding: 160px 0 100px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -300px;
+      width: 100vw;
+      height: 800px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.08) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: -1;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 100px;
+      background: var(--accent-glow);
+      border: 1px solid rgba(99, 102, 241, 0.2);
+      font-size: 13px;
+      color: var(--accent-hover);
+      font-weight: 500;
+      margin-bottom: 28px;
+      letter-spacing: 0.02em;
+    }
+    .hero-badge span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+    .hero h1 {
+      font-size: clamp(38px, 6.5vw, 76px);
+      font-weight: 900;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      max-width: 900px;
+      margin-bottom: 24px;
+      background: linear-gradient(to right, #fff 30%, #a1a1aa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero h1 span.gradient {
+      background: linear-gradient(135deg, var(--accent-hover) 20%, #60a5fa 80%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: inline-block;
+    }
+    .hero p {
+      font-size: 18px;
+      color: var(--text-muted);
+      max-width: 640px;
+      margin-bottom: 40px;
+      line-height: 1.7;
+    }
+    .hero-cta {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 64px;
+    }
+
+    /* ── DASHBOARD MOCKUP PREVIEW ──────────── */
+    .dashboard-preview {
+      width: 100%;
+      max-width: 960px;
+      background: linear-gradient(180deg, rgba(20,20,25,0.8) 0%, rgba(9,9,11,0.9) 100%);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: 0 30px 100px rgba(0,0,0,0.8), inset 0 1px rgba(255,255,255,0.05);
+      padding: 24px;
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 80px;
+    }
+    .preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      padding-bottom: 16px;
+      margin-bottom: 20px;
+    }
+    .window-dots {
+      display: flex;
+      gap: 6px;
+    }
+    .window-dots span {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .window-dots span:nth-child(1) { background: var(--danger); }
+    .window-dots span:nth-child(2) { background: var(--warning); }
+    .window-dots span:nth-child(3) { background: var(--success); }
+    .preview-title {
+      font-size: 12px;
+      color: var(--text-dark);
+      font-weight: 500;
+      letter-spacing: 0.05em;
+    }
+    .preview-body {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      gap: 24px;
+      text-align: left;
+    }
+    .preview-sidebar {
+      border-right: 1px solid rgba(255,255,255,0.05);
+      padding-right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .sidebar-user {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    .user-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), #3b82f6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 12px;
+    }
+    .user-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .user-name {
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .user-status {
+      font-size: 10px;
+      color: var(--success);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .user-status span {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--success);
+      display: inline-block;
+    }
+    .sidebar-menu {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .menu-item {
+      font-size: 12px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .menu-item.active {
+      background: rgba(99, 102, 241, 0.1);
+      color: #fff;
+      font-weight: 500;
+    }
+    .preview-content {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .content-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .stat-box {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.04);
+      padding: 16px;
+      border-radius: 12px;
+    }
+    .stat-lbl {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .stat-val {
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .chart-container {
+      background: rgba(255,255,255,0.01);
+      border: 1px solid rgba(255,255,255,0.04);
+      border-radius: 12px;
+      padding: 16px;
+      height: 180px;
+      position: relative;
+    }
+    .chart-svg {
+      width: 100%;
+      height: 100%;
+    }
+    .chart-path {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 3;
+      stroke-dasharray: 1000;
+      stroke-dashoffset: 1000;
+      animation: draw-chart 3s ease-out forwards infinite;
+    }
+
+    /* ── SECTION CORE ──────────────────────── */
+    .section {
+      padding: 100px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-header {
+      text-align: center;
+      max-width: 600px;
+      margin: 0 auto 64px;
+    }
+    .overline {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-hover);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      margin-bottom: 12px;
+    }
+    .section h2 {
+      font-size: clamp(28px, 4.5vw, 44px);
+      font-weight: 800;
+      line-height: 1.15;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, #fff 50%, var(--text-muted));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .section-header p {
+      font-size: 16px;
+      color: var(--text-muted);
+    }
+
+    /* ── FEATURES GRID ─────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 40px 32px;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    .feature-card:hover {
+      border-color: rgba(99, 102, 241, 0.2);
+      transform: translateY(-4px);
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+      background: var(--bg-hover);
+    }
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), #3b82f6);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .feature-card:hover::before {
+      opacity: 1;
+    }
+    .feature-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      margin-bottom: 24px;
+    }
+    .fi-1 { background: rgba(99, 102, 241, 0.12); color: #818cf8; }
+    .fi-2 { background: rgba(59, 130, 246, 0.12); color: #60a5fa; }
+    .fi-3 { background: rgba(16, 185, 129, 0.12); color: #34d399; }
+    .fi-4 { background: rgba(245, 158, 11, 0.12); color: #fbbf24; }
+    .fi-5 { background: rgba(239, 68, 68, 0.12); color: #f87171; }
+    .fi-6 { background: rgba(6, 182, 212, 0.12); color: #22d3ee; }
+
+    .feature-card h3 {
+      font-size: 20px;
+      margin-bottom: 12px;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+
+    /* ── PRICING CARD STYLING ──────────────── */
+    .pricing-toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin-bottom: 48px;
+    }
+    .toggle-lbl {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+    .toggle-lbl.active {
+      color: #fff;
+    }
+    .pricing-switch {
+      width: 48px;
+      height: 26px;
+      border-radius: 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    .pricing-switch::before {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--text);
+      top: 3px;
+      left: 3px;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .pricing-switch.active {
+      background: var(--accent);
+    }
+    .pricing-switch.active::before {
+      transform: translateX(22px);
+      background: white;
+    }
+    .badge-discount {
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--success);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 12px;
+      border: 1px solid rgba(16, 185, 129, 0.15);
+    }
+
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+      max-width: 1040px;
+      margin: 0 auto;
+    }
+    .price-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 48px 36px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .price-card:hover {
+      border-color: rgba(255, 255, 255, 0.12);
+      transform: translateY(-4px);
+    }
+    .price-card.featured {
+      border-color: var(--accent);
+      background: linear-gradient(180deg, rgba(99, 102, 241, 0.03) 0%, rgba(3,3,3,0.5) 100%), var(--bg-card);
+      box-shadow: 0 15px 40px rgba(99, 102, 241, 0.08);
+    }
+    .price-card.featured::before {
+      content: 'MOST POPULAR';
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 4px 16px;
+      border-radius: 100px;
+      letter-spacing: 0.08em;
+    }
+    .price-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+    .price-amount {
+      font-size: 48px;
+      font-weight: 800;
+      font-family: 'Outfit', sans-serif;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: baseline;
+    }
+    .price-amount span {
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-left: 4px;
+    }
+    .price-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      height: 40px;
+    }
+    .price-features {
+      list-style: none;
+      margin-bottom: 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      flex-grow: 1;
+    }
+    .price-features li {
+      font-size: 14px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .price-features li::before {
+      content: '✓';
+      color: var(--accent-hover);
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    /* ── INTERACTIVE FAQ SECTION ────────────── */
+    .faq-max {
+      max-width: 800px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .faq-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      transition: all 0.25s ease;
+    }
+    .faq-item:hover {
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+    .faq-question {
+      padding: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+    }
+    .faq-question h3 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .faq-arrow {
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      transition: transform 0.25s;
+    }
+    .faq-answer {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s cubic-bezier(0.16, 1, 0.3, 1), padding 0.3s;
+      padding: 0 24px;
+      color: var(--text-muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .faq-item.active {
+      border-color: rgba(99, 102, 241, 0.25);
+    }
+    .faq-item.active .faq-arrow {
+      transform: rotate(180deg);
+      color: var(--text);
+    }
+    .faq-item.active .faq-answer {
+      padding-bottom: 24px;
+    }
+
+    /* ── CTA SECTION ───────────────────────── */
+    .cta-section {
+      text-align: center;
+      padding: 120px 0;
+      position: relative;
+    }
+    .cta-section::before {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      width: 100vw;
+      height: 400px;
+      background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: -1;
+    }
+    .cta-section h2 {
+      font-size: clamp(30px, 5vw, 48px);
+      margin-bottom: 20px;
+    }
+    .cta-section p {
+      font-size: 16px;
+      color: var(--text-muted);
+      max-width: 580px;
+      margin: 0 auto 36px;
+    }
+
+    /* ── FOOTER ────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 48px 0;
+      text-align: center;
+      background: #020202;
+    }
+    footer p {
+      font-size: 13px;
+      color: var(--text-dark);
+    }
+
+    /* ── ANIMATIONS ────────────────────────── */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    @keyframes draw-chart {
+      to { stroke-dashoffset: 0; }
+    }
+
+    /* ── RESPONSIVE ────────────────────────── */
+    @media (max-width: 768px) {
+      .nav-links {
+        display: none;
+      }
+      .preview-body {
+        grid-template-columns: 1fr;
+      }
+      .preview-sidebar {
+        border-right: none;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        padding-right: 0;
+        padding-bottom: 16px;
+      }
+      .content-stats {
+        grid-template-columns: 1fr;
+      }
+      .pricing-grid {
+        grid-template-columns: 1fr;
+        max-width: 400px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- NAVIGATION -->
+  <nav>
+    <div class="container nav-inner">
+      <div class="logo">
+        <div class="logo-icon">⚡</div>
+        PulseDesk
+      </div>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+        <a href="#get-started" class="btn btn-primary">Deploy Now</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- HERO SECTION -->
+  <section class="container hero">
+    <div class="hero-badge">
+      <span></span>
+      GDPR-Compliant · Open Source · Self-Hosted
+    </div>
+    <h1>Secure Analytics.<br>Know Your Team's <span class="gradient">Pulse</span>.</h1>
+    <p>Premium, self-hosted activity and productivity tracking that runs locally on your servers. Protect company data sovereignty and employee privacy while gaining actionable AI-powered insights.</p>
+    
+    <div class="hero-cta">
+      <a href="#get-started" class="btn btn-primary btn-lg">Get Started Free</a>
+      <a href="#features" class="btn btn-outline btn-lg">Explore Features</a>
+    </div>
+
+    <!-- MOCKUP DASHBOARD PREVIEW -->
+    <div class="dashboard-preview">
+      <div class="preview-header">
+        <div class="window-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <div class="preview-title">PulseDesk Dashboard Admin</div>
+        <div style="width: 42px;"></div>
+      </div>
+      <div class="preview-body">
+        <div class="preview-sidebar">
+          <div class="sidebar-user">
+            <div class="user-avatar">AN</div>
+            <div class="user-info">
+              <div class="user-name">Nikam Aniket</div>
+              <div class="user-status"><span></span>Active now</div>
+            </div>
+          </div>
+          <div class="sidebar-menu">
+            <div class="menu-item active">📈 Live Overview</div>
+            <div class="menu-item">🖥️ Screen Streams</div>
+            <div class="menu-item">⚠️ Anomalies</div>
+            <div class="menu-item">⚙️ Settings</div>
+          </div>
+        </div>
+        <div class="preview-content">
+          <div class="content-stats">
+            <div class="stat-box">
+              <div class="stat-lbl">Focus Score</div>
+              <div class="stat-val" style="color: var(--success);">94%</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-lbl">Active Hours</div>
+              <div class="stat-val">6h 42m</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-lbl">Idle Time</div>
+              <div class="stat-val" style="color: var(--warning);">12m</div>
+            </div>
+          </div>
+          <div class="chart-container">
+            <svg class="chart-svg" viewBox="0 0 500 150">
+              <path class="chart-path" d="M0,130 Q50,70 100,90 T200,40 T300,80 T400,20 T500,10" />
+              <!-- Gradients and fills -->
+              <defs>
+                <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.2"/>
+                  <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <path d="M0,130 Q50,70 100,90 T200,40 T300,80 T400,20 T500,10 L500,150 L0,150 Z" fill="url(#chartGrad)" />
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section class="section" id="features">
+    <div class="container">
+      <div class="section-header">
+        <div class="overline">Features</div>
+        <h2>Enterprise Power. Total Sovereignty.</h2>
+        <p>A comprehensive tracking suite built from the ground up for strict privacy, reliability, and ease of deployment.</p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon fi-1">📊</div>
+          <h3>Real-Time Live Feed</h3>
+          <p>Instantly pushes user activity updates using WebSocket connections. Watch live online lists, focus statuses, and active window titles from a single dashboard.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon fi-2">🤖</div>
+          <h3>AI Chat Assistant</h3>
+          <p>Analyze team performance and burnout risk with natural language queries. Run structured recommendations powered securely by Groq AI and Llama models.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon fi-3">🔍</div>
+          <h3>Deterministic Anomalies</h3>
+          <p>Identify excessive idle phases, rapid application switching, and after-hours events based on system rules and customized thresholds.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon fi-4">📸</div>
+          <h3>Screenshots On-Demand</h3>
+          <p>Define flexible recording schedules or capture screenshots automatically on anomaly triggers. Enforces strict admin access control policies.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon fi-5">🚫</div>
+          <h3>Website Blocker</h3>
+          <p>Sync lists of blocked domains to remote clients and automatically capture visual proof of any browser violation events locally.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon fi-6">📄</div>
+          <h3>Automated PDF Reports</h3>
+          <p>Compile clean, print-ready summaries of daily activity, focus scores, and department comparisons to present to supervisors.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section class="section" id="pricing">
+    <div class="container">
+      <div class="section-header">
+        <div class="overline">Pricing</div>
+        <h2>Flexible Plans for Every Team</h2>
+        <p>Start with our free self-hosted edition or upgrade for advanced support and automation features.</p>
+      </div>
+
+      <div class="pricing-toggle-container">
+        <span class="toggle-lbl active" id="billing-monthly">Monthly</span>
+        <div class="pricing-switch" id="price-switch"></div>
+        <span class="toggle-lbl" id="billing-yearly">Annually</span>
+        <span class="badge-discount">Save 20%</span>
+      </div>
+
+      <div class="pricing-grid">
+        <div class="price-card">
+          <div class="price-name">Community</div>
+          <div class="price-amount">$0<span>/month</span></div>
+          <div class="price-desc">Perfect for small teams and developers looking to self-host.</div>
+          <ul class="price-features">
+            <li>Up to 5 employees</li>
+            <li>Real-time dashboard</li>
+            <li>Basic anomaly logging</li>
+            <li>Self-hosted database</li>
+            <li>Community support</li>
+          </ul>
+          <a href="#get-started" class="btn btn-outline" style="margin-top: auto;">Get Started</a>
+        </div>
+
+        <div class="price-card featured">
+          <div class="price-name">Pro</div>
+          <div class="price-amount" id="price-pro">$8<span>/user/month</span></div>
+          <div class="price-desc">Scale with team analytics, AI-assisted summaries, and screenshots.</div>
+          <ul class="price-features">
+            <li>Unlimited employees</li>
+            <li>AI chat analyst & recommendations</li>
+            <li>Configurable screenshot intervals</li>
+            <li>Advanced PDF generation</li>
+            <li>Granular department management</li>
+            <li>Priority email support</li>
+          </ul>
+          <a href="#get-started" class="btn btn-primary" style="margin-top: auto;">Start 14-Day Trial</a>
+        </div>
+
+        <div class="price-card">
+          <div class="price-name">Education</div>
+          <div class="price-amount" id="price-edu">$3<span>/seat/month</span></div>
+          <div class="price-desc">Optimized for university computer labs and proctoring environments.</div>
+          <ul class="price-features">
+            <li>Unlimited lab devices</li>
+            <li>Proctoring mode (high FPS streaming)</li>
+            <li>Domain blocklists for exams</li>
+            <li>Automated attendance integration</li>
+            <li>Bulk device deployment scripts</li>
+            <li>Phone & email support</li>
+          </ul>
+          <a href="#get-started" class="btn btn-outline" style="margin-top: auto;">Contact Sales</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ Accordion -->
+  <section class="section" id="faq">
+    <div class="container">
+      <div class="section-header">
+        <div class="overline">FAQ</div>
+        <h2>Common Questions</h2>
+        <p>Here are answers to common questions about PulseDesk's hosting, privacy model, and usage.</p>
+      </div>
+
+      <div class="faq-max">
+        <div class="faq-item">
+          <div class="faq-question">
+            <h3>Is my data shared with PulseDesk servers?</h3>
+            <div class="faq-arrow">▼</div>
+          </div>
+          <div class="faq-answer">
+            No. PulseDesk is fully self-hosted. The entire application (database, API endpoints, and dashboards) is deployed inside your own network (on-premise or your private cloud). No activity logs or metadata ever leave your servers.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question">
+            <h3>How do clients sync configuration?</h3>
+            <div class="faq-arrow">▼</div>
+          </div>
+          <div class="faq-answer">
+            Enrolled devices run our lightweight agent background service. The agent syncs domain blocklists, retrieves screenshot scheduling intervals, and uploads telemetry batches securely via encrypted HTTP endpoints and WebSockets.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question">
+            <h3>Can employees opt out or manage consent?</h3>
+            <div class="faq-arrow">▼</div>
+          </div>
+          <div class="faq-answer">
+            Yes. PulseDesk includes a dedicated employee portal. Employees can log in to view their own recorded timeline, give or withdraw monitoring consent in compliance with GDPR Article 7, and export their full profile data to satisfy Article 15 requirements.
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question">
+            <h3>What are the requirements for self-hosting?</h3>
+            <div class="faq-arrow">▼</div>
+          </div>
+          <div class="faq-answer">
+            Any server capable of running Docker can host PulseDesk. Our compose stack deploys a FastAPI server, a React static client, and a PostgreSQL database using one unified docker-compose configuration.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CALL TO ACTION -->
+  <section class="cta-section" id="get-started">
+    <div class="container">
+      <h2>Deploy in Under 5 Minutes</h2>
+      <p>Download the Docker compose stack, generate join codes, and start monitoring your workstations securely on your own network.</p>
+      <div class="hero-cta">
+        <a href="https://github.com" class="btn btn-primary btn-lg">📥 Download Compose Stack</a>
+        <a href="#" class="btn btn-outline btn-lg">Book a Demo</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="container">
+      <p>© 2026 PulseDesk. Built with vanilla code and security best practices.</p>
+    </div>
+  </footer>
+
+  <!-- INTERACTIVE FUNCTIONALITIES JS -->
+  <script>
+    // 1. Pricing switch toggler
+    const priceSwitch = document.getElementById('price-switch');
+    const billingMonthly = document.getElementById('billing-monthly');
+    const billingYearly = document.getElementById('billing-yearly');
+    
+    const pricePro = document.getElementById('price-pro');
+    const priceEdu = document.getElementById('price-edu');
+
+    let isAnnual = false;
+
+    function updatePricing() {
+      if (isAnnual) {
+        priceSwitch.classList.add('active');
+        billingYearly.classList.add('active');
+        billingMonthly.classList.remove('active');
+        
+        // Annual pricing calculation (20% discount)
+        pricePro.innerHTML = '$6.40<span>/user/month</span>';
+        priceEdu.innerHTML = '$2.40<span>/seat/month</span>';
+      } else {
+        priceSwitch.classList.remove('active');
+        billingYearly.classList.remove('active');
+        billingMonthly.classList.add('active');
+
+        // Monthly pricing
+        pricePro.innerHTML = '$8<span>/user/month</span>';
+        priceEdu.innerHTML = '$3<span>/seat/month</span>';
+      }
+    }
+
+    priceSwitch.addEventListener('click', () => {
+      isAnnual = !isAnnual;
+      updatePricing();
+    });
+    billingMonthly.addEventListener('click', () => {
+      isAnnual = false;
+      updatePricing();
+    });
+    billingYearly.addEventListener('click', () => {
+      isAnnual = true;
+      updatePricing();
+    });
+
+    // 2. FAQ Accordion toggle
+    const faqItems = document.querySelectorAll('.faq-item');
+    faqItems.forEach(item => {
+      const question = item.querySelector('.faq-question');
+      const answer = item.querySelector('.faq-answer');
+      
+      question.addEventListener('click', () => {
+        const isActive = item.classList.contains('active');
+        
+        // Close all other items first for accordion effect
+        faqItems.forEach(i => {
+          i.classList.remove('active');
+          i.querySelector('.faq-answer').style.maxHeight = null;
+        });
+
+        if (!isActive) {
+          item.classList.add('active');
+          answer.style.maxHeight = answer.scrollHeight + 'px';
+        }
+      });
+    });
+  </script>
+</body>
+</html>

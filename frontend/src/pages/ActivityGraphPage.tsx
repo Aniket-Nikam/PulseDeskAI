@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { Activity, Keyboard, MousePointer, Zap } from "lucide-react";
 import { analyticsApi, employeesApi } from "../api/client";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { PageHeader } from "../components/ui/PageHeader";
+import { EmployeeSearchDropdown } from "../components/ui/EmployeeSearchDropdown";
 import type { Employee, WsMessage, EmployeeStatus } from "../types";
 import { formatTime } from "../utils/format";
 
@@ -34,13 +35,6 @@ export function ActivityGraphPage() {
     queryFn: analyticsApi.overview,
     refetchInterval: 30_000,
   });
-
-  // Auto-select first employee
-  useEffect(() => {
-    if (!selectedId && employees.length > 0) {
-      setSelectedId(employees[0].id);
-    }
-  }, [employees]);
 
   // Receive live WS updates and push to graph
   const handleWsMessage = useCallback((msg: WsMessage) => {
@@ -98,10 +92,12 @@ export function ActivityGraphPage() {
 
   const isOnline = selected?.is_online ?? false;
   const currentApp = selected?.active_app ?? "—";
-  const activityType = selected?.activity_type ?? "offline";
+  // If employee is offline, force status to "offline" regardless of stale cache
+  const activityType = isOnline ? (selected?.activity_type ?? "offline") : "offline";
 
   const activityColor = activityType === "active" ? "#3d9a6a"
     : activityType === "idle" ? "#e9a94a" : "#94a3b8";
+
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload?.length) return null;
@@ -125,12 +121,13 @@ export function ActivityGraphPage() {
         title="Live activity graph"
         subtitle="Real-time input activity and productivity signal"
         action={
-          <select className="input" style={{ width: "auto" }}
-            value={selectedId} onChange={e => { setSelectedId(e.target.value); setData([]); }}>
-            {employees.map(e => (
-              <option key={e.id} value={e.id}>{e.full_name}</option>
-            ))}
-          </select>
+          <EmployeeSearchDropdown
+            selectedId={selectedId}
+            onChange={(id) => {
+              setSelectedId(id);
+              setData([]);
+            }}
+          />
         }
       />
 

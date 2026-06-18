@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { UserPlus, Search, Trash2, UserX, UserCheck, Link2, X, Copy, Check, Clock3 } from "lucide-react";
+import { UserPlus, Search, Trash2, UserX, UserCheck, Link2, X, Copy, Check, Clock3, Key } from "lucide-react";
 import { employeesApi, departmentsApi, enrollApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
 import { OnlineBadge } from "../components/ui/OnlineBadge";
@@ -8,6 +8,7 @@ import type { Employee, Department } from "../types";
 import { formatDate } from "../utils/format";
 import { api } from "../api/client";
 import { BACKEND_ROOT } from "../config";
+import { Dialog } from "../components/ui/Dialog";
 
 function getDefaultEnrollServerUrl(): string {
   if (typeof window === "undefined") return BACKEND_ROOT;
@@ -36,6 +37,7 @@ export function EmployeesPage() {
   const [enrollTarget, setEnrollTarget] = useState<Employee | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Employee | null>(null);
   const [hoursTarget, setHoursTarget] = useState<Employee | null>(null);
+  const [resetPwdTarget, setResetPwdTarget] = useState<Employee | null>(null);
   const [form, setForm] = useState({
     email: "",
     full_name: "",
@@ -274,12 +276,15 @@ export function EmployeesPage() {
                         <Link2 size={12} /> Enroll device
                       </button>
                       <button className="btn btn-sm btn-secondary"
-                        onClick={() => { if (confirm(`Deactivate ${e.full_name}? Data is kept, they can rejoin later.`)) deactivate.mutate(e.id); }}
+                        onClick={async () => { if (await Dialog.confirm(`Deactivate ${e.full_name}? Data is kept, they can rejoin later.`, "Deactivate Employee")) deactivate.mutate(e.id); }}
                         title="Deactivate - keeps all data">
                         <UserX size={12} />
                       </button>
                       <button className="btn btn-sm btn-secondary" onClick={() => setHoursTarget(e)} title="Edit work hours">
                         <Clock3 size={12} />
+                      </button>
+                      <button className="btn btn-sm btn-secondary" onClick={() => setResetPwdTarget(e)} title="Reset Password">
+                        <Key size={12} />
                       </button>
                       <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(e)} title="Delete permanently">
                         <Trash2 size={12} />
@@ -354,6 +359,9 @@ export function EmployeesPage() {
           onConfirm={() => hardDelete.mutate(confirmDelete.id)}
           onClose={() => setConfirmDelete(null)}
           loading={hardDelete.isPending} />
+      )}
+      {resetPwdTarget && (
+        <ResetPasswordModal employee={resetPwdTarget} onClose={() => setResetPwdTarget(null)} />
       )}
     </div>
   );
@@ -571,6 +579,56 @@ function DeleteModal({ employee, onConfirm, onClose, loading }: { employee: Empl
           </button>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+  const mutation = useMutation({
+    mutationFn: (newPwd: string) => employeesApi.resetPassword(employee.id, newPwd),
+    onSuccess: () => setSuccess(true),
+    onError: (err: any) => setError(err?.response?.data?.detail ?? "Failed to reset password"),
+  });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
+      onClick={onClose}>
+      <div className="card" style={{ width: "100%", maxWidth: 420, padding: "var(--space-6)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--text-primary)" }}>Reset Password</h2>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}><X size={14} /></button>
+        </div>
+        
+        {success ? (
+          <div style={{ textAlign: "center", padding: "16px 0" }}>
+            <div style={{ color: "var(--success)", marginBottom: 8 }}><Check size={32} style={{ margin: "0 auto" }} /></div>
+            <h3 style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>Password Reset Successfully</h3>
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>The password for {employee.full_name} has been updated.</p>
+            <button className="btn btn-primary" onClick={onClose}>Done</button>
+          </div>
+        ) : (
+          <>
+            <p style={{ fontSize: 13, color: "var(--text-tertiary)", marginBottom: 16 }}>
+              Enter a new password for <strong>{employee.full_name}</strong>. It must be at least 8 characters long.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16 }}>
+              <label style={{ fontSize: 12, color: "var(--text-secondary)" }}>New Password</label>
+              <input type="text" className="input" value={password} onChange={e => setPassword(e.target.value)} placeholder="Minimum 8 characters" />
+            </div>
+            {error && <div style={{ padding: "8px 12px", background: "var(--danger-subtle)", color: "var(--danger)", borderRadius: "var(--radius-md)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+            
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+              <button className="btn btn-primary" onClick={() => { setError(""); mutation.mutate(password); }} disabled={password.length < 8 || mutation.isPending}>
+                {mutation.isPending ? "Resetting..." : "Reset Password"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

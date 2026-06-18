@@ -28,6 +28,7 @@ from capture.window_tracker import get_active_browser_url, get_active_window
 from capture.input_monitor import monitor as input_monitor
 from sync.queue import OfflineSyncQueue
 from sync.client import PulseDeskClient
+from capture.screen_streamer import ScreenStreamer
 
 logging.basicConfig(
     level=getattr(logging, config.log_level.upper(), logging.INFO),
@@ -97,8 +98,22 @@ class PulseDeskAgent:
         self._blocklist: List[str] = []
         self._last_blocklist_sync = 0.0
         self._last_violation_reported: dict = {}  # domain -> timestamp, cooldown
+        self.streamer: Optional[ScreenStreamer] = None
+        self._lock_socket: Optional[socket.socket] = None
+
+    def _check_single_instance(self):
+        try:
+            self._lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Bind to localhost port 49019 to enforce single instance
+            self._lock_socket.bind(("127.0.0.1", 49019))
+        except socket.error:
+            print("\n[ERROR] PulseDesk Agent is already running on this system.")
+            log.error("agent_already_running: another instance has acquired the lock on port 49019")
+            sys.exit(0)
 
     def start(self):
+        self._check_single_instance()
+
         if not config.server_url:
             log.error("SERVER_URL is not configured. Use --join URL or set SERVER_URL in .env")
             sys.exit(1)
@@ -123,6 +138,12 @@ class PulseDeskAgent:
             log.error("Not enrolled. Run: python agent.py --join <URL>")
             sys.exit(1)
 
+        # GDPR consent check must happen before any monitoring begins.
+        from consent import check_and_request_consent
+        if not check_and_request_consent(self.queue, self.client):
+            log.warning("monitoring_blocked: consent not given")
+            sys.exit(0)
+
         # Update device info immediately using resilient client
         self.client.send_heartbeat()
 
@@ -137,7 +158,14 @@ class PulseDeskAgent:
 
         self._running = True
         log.info("Monitoring active. Press Ctrl+C to stop.")
-        
+
+        # Initialize and start live screen streamer
+        self.streamer = ScreenStreamer(
+            server_url=config.server_url,
+            device_token=self.client.device_token,
+        )
+        self.streamer.start()
+
         try:
             self._run_loop()
         except KeyboardInterrupt:
@@ -277,46 +305,19 @@ class PulseDeskAgent:
             self._take_and_upload_screenshot(trigger="interval")
 
     def _take_and_upload_screenshot(self, trigger: str = "interval"):
-        """Capture and upload screenshot."""
-        data = None
-        mime = "image/jpeg"
-
-        # Try mss first (fastest, no dependencies)
-        try:
-            import mss
-            import mss.tools
-            import io
-            with mss.mss() as sct:
-                monitor = sct.monitors[1]
-                img = sct.grab(monitor)
-                buf = io.BytesIO()
-                buf.write(mss.tools.to_png(img.rgb, img.size))
-                data = buf.getvalue()
-                mime = "image/png"
-        except ImportError:
-            # Fallback: PIL
-            try:
-                from PIL import ImageGrab
-                import io
-                img = ImageGrab.grab()
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=60)
-                data = buf.getvalue()
-            except Exception as e:
-                log.debug(f"screenshot_failed: {e}")
-                return
-        except Exception as e:
-            log.debug(f"screenshot_failed: {e}")
-            return
-
+        """Capture and upload screenshot using unified capture helper."""
+        from capture.screen_capture import capture_primary_screen
+        # Capture full-res PNG if possible, fallback to JPEG quality 60
+        data, mime = capture_primary_screen(max_width=None, quality=60, format_type="PNG")
         if not data:
             return
-
         self.client.upload_screenshot(data, mime, trigger=trigger)
 
     def _handle_signal(self, signum, frame):
         log.info("Shutting down gracefully...")
         self._running = False
+        if self.streamer:
+            self.streamer.stop()
         self._send_batch()
         self.client.end_session()
         input_monitor.stop()

@@ -422,7 +422,9 @@ Recent violations:
         db: AsyncSession,
     ) -> ActivityPatternsResponse:
         emp_result = await db.execute(
-            select(Employee, Department.name.label("dept_name")).where(Employee.id == employee_id)
+            select(Employee, Department.name.label("dept_name"))
+            .outerjoin(Department, Employee.department_id == Department.id)
+            .where(Employee.id == employee_id)
         )
         emp_row = emp_result.first()
         if not emp_row:
@@ -513,7 +515,9 @@ Recent violations:
         db: AsyncSession,
     ) -> tuple[Employee, Optional[str], list, int]:
         emp_result = await db.execute(
-            select(Employee, Department.name.label("dept_name")).where(Employee.id == employee_id)
+            select(Employee, Department.name.label("dept_name"))
+            .outerjoin(Department, Employee.department_id == Department.id)
+            .where(Employee.id == employee_id)
         )
         emp_row = emp_result.first()
         if not emp_row:
@@ -740,7 +744,9 @@ Daily Breakdown:
         db: AsyncSession,
     ) -> AnomalyRecommendationResponse:
         emp_result = await db.execute(
-            select(Employee, Department.name.label("dept_name")).where(Employee.id == employee_id)
+            select(Employee, Department.name.label("dept_name"))
+            .outerjoin(Department, Employee.department_id == Department.id)
+            .where(Employee.id == employee_id)
         )
         emp_row = emp_result.first()
         if not emp_row:

@@ -14,6 +14,58 @@ export const api = axios.create({
 
 let _refreshing: Promise<void> | null = null;
 
+// Improved error handler with better error messages
+function extractErrorDetail(error: any): { message: string; requestId?: string; retryAfter?: number } {
+  const response = error.response;
+  
+  if (!response) {
+    return { message: "Network error. Please check your connection and try again." };
+  }
+  
+  const data = response.data;
+  const status = response.status;
+  const headers = response.headers;
+  
+  // Extract request ID from response for support
+  const requestId = data?.request_id || headers["x-request-id"];
+  
+  // Handle rate limiting
+  if (status === 429) {
+    const retryAfter = parseInt(headers["retry-after"] || "60", 10);
+    return {
+      message: `Too many requests. Please wait ${retryAfter} seconds before retrying.`,
+      requestId,
+      retryAfter,
+    };
+  }
+  
+  // Handle validation errors
+  if (status === 422) {
+    const errors = data?.errors || [];
+    const errorMessages = errors
+      .map((e: any) => `${e.field}: ${e.message}`)
+      .join("; ");
+    return {
+      message: `Validation error: ${errorMessages || "Please check your input"}`,
+      requestId,
+    };
+  }
+  
+  // Handle server errors
+  if (status >= 500) {
+    return {
+      message: data?.detail || "Server error. Please try again later or contact support.",
+      requestId,
+    };
+  }
+  
+  // Default error
+  return {
+    message: data?.detail || `Error: ${status} ${response.statusText}`,
+    requestId,
+  };
+}
+
 // Silent cookie-based session refresh.
 api.interceptors.response.use(
   (res) => res,
@@ -55,11 +107,16 @@ api.interceptors.response.use(
   }
 );
 
+// Export error extraction for UI components
+export { extractErrorDetail };
+
 // ── API modules ───────────────────────────────────────────────────────────────
 
 export const authApi = {
   login: (email: string, password: string) =>
     api.post("/auth/login", { email, password }).then((r) => r.data),
+  signup: (email: string, password: string, full_name: string, business_name?: string) =>
+    api.post("/auth/signup", { email, password, full_name, business_name }).then((r) => r.data),
   me: () => api.get("/auth/me").then((r) => r.data),
   refresh: () => api.post("/auth/refresh").then((r) => r.data),
   logout: () => api.post("/auth/logout").then((r) => r.data),
@@ -73,6 +130,8 @@ export const employeesApi = {
   update: (id: string, data: unknown) =>
     api.patch(`/employees/${id}`, data).then((r) => r.data),
   deactivate: (id: string) => api.delete(`/employees/${id}`),
+  resetPassword: (id: string, new_password: string) =>
+    api.post(`/employees/${id}/reset-password`, { new_password }).then((r) => r.data),
 };
 
 export const departmentsApi = {
@@ -190,4 +249,56 @@ export const enrollApi = {
     api
       .post(`${API_ROOT}/api/v1/enroll/generate-join-link?employee_id=${employeeId}&server_url=${encodeURIComponent(serverUrl)}`)
       .then((r) => r.data),
+};
+
+export const attendanceApi = {
+  // Settings
+  getSettings: () => api.get("/attendance/settings").then((r) => r.data),
+  setup: (mode: string) => api.post("/attendance/setup", { mode }).then((r) => r.data),
+  updateSettings: (data: Record<string, unknown>) => api.put("/attendance/settings", data).then((r) => r.data),
+
+  // Locations
+  getLocations: () => api.get("/attendance/locations").then((r) => r.data),
+  createLocation: (data: Record<string, unknown>) => api.post("/attendance/locations", data).then((r) => r.data),
+  updateLocation: (id: string, data: Record<string, unknown>) => api.put(`/attendance/locations/${id}`, data).then((r) => r.data),
+  deleteLocation: (id: string) => api.delete(`/attendance/locations/${id}`).then((r) => r.data),
+
+  // Check-in / Check-out
+  checkIn: (employee_id: string, latitude?: number, longitude?: number) =>
+    api.post("/attendance/check-in", { employee_id, latitude, longitude }).then((r) => r.data),
+  checkOut: (employee_id: string, latitude?: number, longitude?: number) =>
+    api.post("/attendance/check-out", { employee_id, latitude, longitude }).then((r) => r.data),
+
+  // Lunch
+  startLunch: (employee_id: string) => api.post("/attendance/lunch/start", { employee_id }).then((r) => r.data),
+  endLunch: (employee_id: string) => api.post("/attendance/lunch/end", { employee_id }).then((r) => r.data),
+
+  // Records
+  getToday: () => api.get("/attendance/today").then((r) => r.data),
+  getRecords: (params?: Record<string, unknown>) => api.get("/attendance/records", { params }).then((r) => r.data),
+  updateRecord: (id: string, data: Record<string, unknown>) => api.put(`/attendance/records/${id}`, data).then((r) => r.data),
+  deleteRecord: (id: string) => api.delete(`/attendance/records/${id}`).then((r) => r.data),
+  getStats: (params?: Record<string, unknown>) => api.get("/attendance/stats", { params }).then((r) => r.data),
+  exportRecords: (params?: Record<string, unknown>) =>
+    api.get("/attendance/export", { params, responseType: "blob" }).then((r) => r.data),
+};
+
+export const liveStreamApi = {
+  getStreamConfig: (employeeId: string) => api.get(`/agent/stream-config/${employeeId}`).then((r) => r.data),
+  updateStreamConfig: (employeeId: string, enabled: boolean, fps?: number, quality?: number) =>
+    api.put(`/agent/stream-config/${employeeId}`, { enabled, fps, quality }).then((r) => r.data),
+};
+
+export const employeePortalApi = {
+  dashboard: () => api.get("/employee/portal/dashboard").then((r) => r.data),
+  timeline: (date?: string) => api.get("/employee/portal/timeline", { params: { date } }).then((r) => r.data),
+  consent: () => api.get("/employee/portal/consent").then((r) => r.data),
+  toggleConsent: (consentGiven: boolean) => api.post("/employee/portal/consent", { consent_given: consentGiven }).then((r) => r.data),
+  exportData: () => api.get("/employee/portal/export").then((r) => r.data),
+  eraseData: () => api.delete("/employee/portal/erase").then((r) => r.data),
+};
+
+export const weeklySummariesApi = {
+  list: () => api.get("/analytics/weekly-summaries").then((r) => r.data),
+  trigger: (date: string) => api.post("/analytics/weekly-summaries/trigger", { date }).then((r) => r.data),
 };

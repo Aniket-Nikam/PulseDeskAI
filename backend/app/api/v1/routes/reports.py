@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.db.session import get_db
-from app.models import Employee, DailySummary, AnomalyLog, Department, ActivityEvent
+from app.models import Employee, DailySummary, AnomalyLog, ActivityEvent
 from app.api.v1.routes.auth import require_admin_read
 from app.core.logging import get_logger
 from app.core.files import sanitize_filename_component
@@ -158,7 +158,7 @@ async def generate_team_pdf(
         raise HTTPException(status_code=501, detail="Run: pip install fpdf2")
 
     try:
-        stmt = select(Employee).where(Employee.is_active == True)
+        stmt = select(Employee).where(Employee.is_active)
         if department_id:
             stmt = stmt.where(Employee.department_id == department_id)
         stmt = stmt.order_by(Employee.full_name)

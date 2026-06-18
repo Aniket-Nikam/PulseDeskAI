@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shield, Plus, Trash2, ToggleLeft, ToggleRight, Download } from "lucide-react";
 import { blockerApi } from "../api/client";
 import { PageHeader } from "../components/ui/PageHeader";
+import { Dialog } from "../components/ui/Dialog";
 
 interface BlockedDomain {
   id: string;
@@ -63,9 +64,9 @@ export function BlockerPage() {
 
   const loadDefaults = useMutation({
     mutationFn: blockerApi.loadDefaults,
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
       qc.invalidateQueries({ queryKey: ["blocked-domains"] });
-      alert(`Loaded ${data.added} default blocks`);
+      await Dialog.alert(`Loaded ${data.added} default blocks`, "Load Defaults");
     },
   });
 
@@ -190,7 +191,7 @@ export function BlockerPage() {
                         <button className="btn btn-ghost btn-sm" onClick={() => toggleDomain.mutate(d.id)} title={d.is_active ? "Pause" : "Enable"}>
                           {d.is_active ? <ToggleRight size={14} style={{ color: "var(--success)" }} /> : <ToggleLeft size={14} />}
                         </button>
-                        <button className="btn btn-ghost btn-sm" onClick={() => { if (confirm(`Remove ${d.domain}?`)) removeDomain.mutate(d.id); }}>
+                        <button className="btn btn-ghost btn-sm" onClick={async () => { if (await Dialog.confirm(`Remove ${d.domain}?`, "Remove Blocked Domain")) removeDomain.mutate(d.id); }}>
                           <Trash2 size={13} />
                         </button>
                       </div>

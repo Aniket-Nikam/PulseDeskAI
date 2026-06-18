@@ -65,7 +65,7 @@ async def get_live_overview(db: AsyncSession) -> List[EmployeeStatusOut]:
             select(Device).where(
                 Device.employee_id == employee.id,
                 Device.status == DeviceStatus.approved,
-            ).order_by(Device.last_heartbeat.desc()).limit(1)
+            ).order_by(Device.last_heartbeat.desc().nulls_last()).limit(1)
         )
         device = device_result.scalar_one_or_none()
 
@@ -249,7 +249,7 @@ async def get_dept_comparison(target_date: date, db: AsyncSession) -> List[Depar
                      select(Device).where(
                          Device.employee_id == emp.id,
                          Device.status == DeviceStatus.approved,
-                     ).order_by(Device.last_heartbeat.desc()).limit(1)
+                     ).order_by(Device.last_heartbeat.desc().nulls_last()).limit(1)
                  )
                  dev = dev_result.scalar_one_or_none()
                  if is_device_online(dev):

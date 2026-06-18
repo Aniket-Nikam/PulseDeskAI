@@ -144,3 +144,99 @@ def is_productive_category(category: Optional[str]) -> bool:
 def is_distraction_category(category: Optional[str]) -> bool:
     distractions = {"entertainment", "gaming", "social media"}
     return category in distractions
+
+
+import asyncio
+from sqlalchemy import text
+from app.db.session import AsyncSessionLocal
+from app.ai.providers.factory import get_active_provider
+from app.core.logging import get_logger
+
+log = get_logger("smart_categorizer")
+
+_smart_categories_cache: dict[str, str] = {}
+_pending_categorizations: set[str] = set()
+
+SYSTEM_PROMPT = """You are an expert software app and window title categorizer.
+You must categorize a given application process name and its active window title into one of the following exact categories:
+- development (terminals, editors, git tools, databases)
+- design (figma, sketch, etc.)
+- creative (video/audio editing, canvas, image tools)
+- writing (word processors, docs)
+- data (spreadsheets, BI tools)
+- presentation (slides)
+- project management (jira, asana, monday, notion)
+- communication (slack, teams, zoom)
+- email (gmail, outlook)
+- notes (obsidian, craft, onenote)
+- documentation (confluence, sharepoint)
+- entertainment (netflix, youtube, spotify)
+- gaming (steam, games)
+- social media (twitter, facebook, reddit)
+- system (file explorer, settings, clock)
+- other (any other generic or unidentifiable app)
+
+Respond with ONLY the category name. Do not include any explanation, headers, or punctuation."""
+
+ALLOWED_CATEGORIES = {
+    "development", "design", "creative", "writing", "data", "presentation",
+    "project management", "communication", "email", "notes", "documentation",
+    "entertainment", "gaming", "social media", "system", "other"
+}
+
+async def _run_smart_categorization(app_name: str, window_title: Optional[str]):
+    try:
+        from app.core.config import settings
+        if not settings.AI_ENABLED:
+            return
+
+        provider = get_active_provider()
+        prompt = f"App Name: {app_name}\nWindow Title: {window_title or ''}"
+        
+        category_raw = await provider.generate_text(
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt=SYSTEM_PROMPT,
+            temperature=0.0,
+            max_tokens=20
+        )
+        
+        category = category_raw.strip().lower()
+        if category not in ALLOWED_CATEGORIES:
+            category = "other"
+            
+        _smart_categories_cache[app_name] = category
+        log.info("app_categorized_by_ai", app=app_name, category=category)
+
+        # Update database records
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text("UPDATE activity_events SET app_category = :cat WHERE active_app = :app AND app_category = 'other'"),
+                {"cat": category, "app": app_name}
+            )
+            await db.execute(
+                text("UPDATE app_usage_daily SET app_category = :cat WHERE app_name = :app AND app_category = 'other'"),
+                {"cat": category, "app": app_name}
+            )
+            await db.commit()
+            
+    except Exception as e:
+        log.warning("smart_categorization_failed", app=app_name, error=str(e))
+    finally:
+        _pending_categorizations.discard(app_name)
+
+def trigger_smart_categorization(app_name: str, window_title: Optional[str]):
+    if app_name in _smart_categories_cache or app_name in _pending_categorizations:
+        return
+    from app.core.config import settings
+    if not settings.AI_ENABLED:
+        return
+    _pending_categorizations.add(app_name)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_run_smart_categorization(app_name, window_title))
+    except RuntimeError:
+        import threading
+        def run_in_thread():
+            asyncio.run(_run_smart_categorization(app_name, window_title))
+        threading.Thread(target=run_in_thread, daemon=True).start()
+

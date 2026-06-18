@@ -23,7 +23,12 @@ from sqlalchemy import select
 
 from app.db.session import get_db
 from app.models import Employee, Device, DeviceStatus
-from app.core.security import generate_device_token, generate_enrollment_code, generate_one_time_token
+from app.core.security import (
+    generate_device_token,
+    generate_enrollment_code,
+    generate_one_time_token,
+    hash_device_token,
+)
 from app.api.v1.routes.auth import require_admin_write
 from app.core.logging import get_logger
 from app.core.config import settings
@@ -146,31 +151,38 @@ async def verify_join_code(request: Request, db: AsyncSession = Depends(get_db))
     device_id = payload.get("device_id")
     device_token = payload.get("device_token")
 
+    # Generate device info only once (idempotent)
     if not device_id or not device_token:
-        employee_id = uuid.UUID(payload["employee_id"])
-        generated_device_id = uuid.uuid4()
-        generated_device_token = generate_device_token(str(generated_device_id), str(employee_id))
+        try:
+            employee_id = uuid.UUID(payload["employee_id"])
+            generated_device_id = uuid.uuid4()
+            generated_device_token = generate_device_token(str(generated_device_id), str(employee_id))
 
-        device = Device(
-            id=generated_device_id,
-            employee_id=employee_id,
-            hostname="pending",
-            platform="unknown",
-            device_token=generated_device_token,
-            status=DeviceStatus.approved,
-            enrolled_at=datetime.now(timezone.utc),
-        )
-        db.add(device)
-        await db.commit()
+            device = Device(
+                id=generated_device_id,
+                employee_id=employee_id,
+                hostname="pending",
+                platform="unknown",
+                device_token=hash_device_token(generated_device_token),
+                status=DeviceStatus.approved,
+                enrolled_at=datetime.now(timezone.utc),
+            )
+            db.add(device)
+            await db.commit()
 
-        device_id = str(generated_device_id)
-        device_token = generated_device_token
-        token_store.update_payload(
-            kind=JOIN_CODE_KIND,
-            token=code,
-            updates={"device_id": device_id, "device_token": device_token},
-        )
+            device_id = str(generated_device_id)
+            device_token = generated_device_token
+            # Update token with device info (safe: idempotent operation)
+            token_store.update_payload(
+                kind=JOIN_CODE_KIND,
+                token=code,
+                updates={"device_id": device_id, "device_token": device_token},
+            )
+        except Exception as e:
+            log.error("device_creation_failed", code=code, error=str(e))
+            raise HTTPException(status_code=500, detail="Failed to create device. Please try again.")
 
+    # Generate download token (one per verify call - safe for retries)
     download_token = generate_one_time_token(20)
     token_store.issue(
         kind=JOIN_DOWNLOAD_KIND,
@@ -179,7 +191,7 @@ async def verify_join_code(request: Request, db: AsyncSession = Depends(get_db))
         ttl_seconds=settings.JOIN_DOWNLOAD_TOKEN_TTL_MINUTES * 60,
     )
 
-    log.info("join_code_verified", employee=payload["employee_email"], device_id=device_id)
+    log.info("join_code_verified", employee=payload["employee_email"], device_id=device_id, retry_safe=True)
 
     return {
         "employee_name": payload["employee_name"],
@@ -332,9 +344,12 @@ echo "Installation complete! Run: bash start_mac.sh"
     required_agent_files = [
         "agent.py",
         "requirements.txt",
+        "consent.py",
+        "service.py",
         "core/config.py",
         "capture/window_tracker.py",
         "capture/input_monitor.py",
+        "capture/screen_streamer.py",
         "sync/queue.py",
         "sync/client.py",
     ]
@@ -508,6 +523,8 @@ def _render_join_page() -> str:
 </div>
 
 <script>
+let verifyAbortController = null;
+
 async function verify() {
   const code = document.getElementById('code').value.trim();
   const btn = document.getElementById('verifyBtn');
@@ -522,30 +539,57 @@ async function verify() {
   btn.textContent = 'Verifying...';
   errEl.style.display = 'none';
 
+  // Cancel any previous request
+  if (verifyAbortController) {
+    verifyAbortController.abort();
+  }
+  verifyAbortController = new AbortController();
+
   try {
     const resp = await fetch('/join/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
+      signal: verifyAbortController.signal,
     });
 
     const data = await resp.json();
 
     if (!resp.ok) {
-      showError(data.detail || 'Invalid code. Please check and try again.');
+      // Handle rate limiting
+      if (resp.status === 429) {
+        const retryAfter = resp.headers.get('retry-after') || '60';
+        showError(`Too many requests. Please wait ${retryAfter} seconds and try again.`);
+      } else if (resp.status === 410) {
+        showError('Join code already used. Ask your admin for a new code.');
+      } else if (resp.status === 404) {
+        showError('Invalid or expired join code. Ask your admin for a new one.');
+      } else if (resp.status >= 500) {
+        const reqId = data.request_id || 'unknown';
+        showError(`Server error (Request ID: ${reqId}). Please try again later or contact support.`);
+      } else {
+        showError(data.detail || 'Invalid code. Please check and try again.');
+      }
       btn.disabled = false;
       btn.textContent = 'Continue →';
       return;
     }
 
-    // Show success
+    // Show success - safe to proceed
     document.getElementById('step1').style.display = 'none';
     document.getElementById('empName').textContent = 'Welcome, ' + data.employee_name + '!';
     document.getElementById('downloadBtn').href = data.download_url;
     document.getElementById('step2').classList.add('visible');
 
   } catch (e) {
-    showError('Connection failed. Make sure the server is running.');
+    // Don't show error if request was aborted by user
+    if (e.name === 'AbortError') {
+      showError('Request cancelled. Please try again.');
+    } else if (e instanceof TypeError) {
+      showError('Connection failed. Please check your internet connection and try again.');
+    } else {
+      showError('An unexpected error occurred. Please try again.');
+    }
     btn.disabled = false;
     btn.textContent = 'Continue →';
   }
@@ -556,6 +600,13 @@ function showError(msg) {
   el.textContent = msg;
   el.style.display = 'block';
 }
+
+// Cancel on-demand if user navigates away
+window.addEventListener('beforeunload', () => {
+  if (verifyAbortController) {
+    verifyAbortController.abort();
+  }
+});
 </script>
 </body>
 </html>"""

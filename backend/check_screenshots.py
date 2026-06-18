@@ -37,7 +37,7 @@ async def check():
         print(f"\nSummary: {found} files found, {missing} files MISSING")
         
         # Also list files on disk not in DB
-        print(f"\n--- Files on disk ---")
+        print("\n--- Files on disk ---")
         disk_files = set(os.listdir(SCREENSHOT_DIR)) if os.path.exists(SCREENSHOT_DIR) else set()
         db_files = {row[2] for row in rows}
         orphans = disk_files - db_files

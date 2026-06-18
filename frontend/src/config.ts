@@ -3,9 +3,9 @@ export const isBrowser = typeof window !== "undefined";
 let apiUrl = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
 
 if (!apiUrl) {
-  apiUrl = isBrowser ? `${window.location.origin}/api/v1` : "http://localhost:8000/api/v1";
+  apiUrl = isBrowser ? `${window.location.origin}/api/v1` : "http://127.0.0.1:8000/api/v1";
 } else if (apiUrl.startsWith("/")) {
-  apiUrl = isBrowser ? `${window.location.origin}${apiUrl}` : `http://localhost:8000${apiUrl}`;
+  apiUrl = isBrowser ? `${window.location.origin}${apiUrl}` : `http://127.0.0.1:8000${apiUrl}`;
 }
 
 export const API_BASE_URL = apiUrl;

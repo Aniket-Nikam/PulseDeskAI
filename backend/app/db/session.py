@@ -81,7 +81,33 @@ async def ensure_schema_ready() -> None:
         from app.models import Base
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        log.info("schema_ready", msg="Database schema auto-creation succeeded.")
+        
+        # Safely add hashed_password column to employees table if missing (isolated transaction)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("ALTER TABLE employees ADD COLUMN hashed_password VARCHAR(255) NULL"))
+        except Exception:
+            pass
+
+        # Safely add business_name column to admins table if missing (isolated transaction)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("ALTER TABLE admins ADD COLUMN business_name VARCHAR(255) NULL"))
+        except Exception:
+            pass
+
+        # Safely add check_in_count column to attendance_records table if missing
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("ALTER TABLE attendance_records ADD COLUMN check_in_count INTEGER DEFAULT 1"))
+        except Exception:
+            pass
+
+        async with engine.begin() as conn:
+            # Verify and auto-create composite indexes on startup
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_screenshots_employee_captured_at ON screenshots (employee_id, captured_at)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_anomalies_employee_detected_at ON anomaly_logs (employee_id, detected_at)"))
+        log.info("schema_ready", msg="Database schema auto-creation and composite indexes verification succeeded.")
     except Exception as e:
         log.error("schema_error", error=str(e))
         raise

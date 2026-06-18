@@ -16,6 +16,7 @@ class SettingsUpdate(BaseModel):
     excessive_idle_threshold_minutes: int = Field(default=45, ge=5, le=240)
     distraction_threshold_minutes: int = Field(default=5, ge=1, le=120)
     after_hours_min_active_minutes: int = Field(default=5, ge=1, le=60)
+    screenshot_retention_days: int = Field(default=30, ge=1, le=365)
 
 @router.get("", response_model=SettingsUpdate)
 async def get_settings(
@@ -37,6 +38,7 @@ async def get_settings(
         excessive_idle_threshold_minutes=settings.excessive_idle_threshold_minutes,
         distraction_threshold_minutes=settings.distraction_threshold_minutes,
         after_hours_min_active_minutes=settings.after_hours_min_active_minutes,
+        screenshot_retention_days=settings.screenshot_retention_days,
     )
 
 @router.put("", response_model=SettingsUpdate)
@@ -57,6 +59,7 @@ async def update_settings(
     settings.excessive_idle_threshold_minutes = payload.excessive_idle_threshold_minutes
     settings.distraction_threshold_minutes = payload.distraction_threshold_minutes
     settings.after_hours_min_active_minutes = payload.after_hours_min_active_minutes
+    settings.screenshot_retention_days = payload.screenshot_retention_days
 
     await db.commit()
     await db.refresh(settings)
@@ -68,4 +71,5 @@ async def update_settings(
         excessive_idle_threshold_minutes=settings.excessive_idle_threshold_minutes,
         distraction_threshold_minutes=settings.distraction_threshold_minutes,
         after_hours_min_active_minutes=settings.after_hours_min_active_minutes,
+        screenshot_retention_days=settings.screenshot_retention_days,
     )

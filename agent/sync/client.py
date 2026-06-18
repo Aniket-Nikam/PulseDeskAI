@@ -2,6 +2,10 @@ import logging
 import re
 import time
 import threading
+import hashlib
+import hmac
+import json as jsonlib
+import secrets
 from typing import Optional, List
 from urllib.parse import urlparse
 import requests
@@ -73,6 +77,10 @@ class PulseDeskClient:
 
         # Create localized resilient session
         self.session = requests.Session()
+        self.session.headers.update({
+            "ngrok-skip-browser-warning": "1",
+            "Bypass-Tunnel-Reminder": "true"
+        })
         adapter = requests.adapters.HTTPAdapter(pool_connections=5, pool_maxsize=5, max_retries=1)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
@@ -111,10 +119,22 @@ class PulseDeskClient:
         files: dict = None,
         headers: dict | None = None,
     ):
-        """Unified internal post utilizing session with robust failure boundaries."""
+        """Unified internal POST with request signing and robust failure boundaries."""
         url = f"{self.base_url}{path}"
+        req_headers = dict(headers or {})
+        if self.device_token:
+            req_headers.setdefault("X-Device-Token", self.device_token)
         try:
-            r = self.session.post(url, json=json, data=data, files=files, headers=headers, timeout=TIMEOUT)
+            request_kwargs = {"data": data, "files": files, "headers": req_headers}
+            if json is not None:
+                body = jsonlib.dumps(json, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                req_headers["Content-Type"] = "application/json"
+                request_kwargs["data"] = body
+
+            req = requests.Request("POST", url, **request_kwargs)
+            prepared = self.session.prepare_request(req)
+            self._sign_prepared_request(prepared, path)
+            r = self.session.send(prepared, timeout=TIMEOUT)
             r.raise_for_status()
             self._is_online = True
             return r
@@ -124,14 +144,49 @@ class PulseDeskClient:
 
     def _get(self, path: str, params: dict = None, headers: dict | None = None):
         url = f"{self.base_url}{path}"
+        req_headers = dict(headers or {})
+        if self.device_token:
+            req_headers.setdefault("X-Device-Token", self.device_token)
         try:
-            r = self.session.get(url, params=params, headers=headers, timeout=TIMEOUT)
+            req = requests.Request("GET", url, params=params, headers=req_headers)
+            prepared = self.session.prepare_request(req)
+            self._sign_prepared_request(prepared, path)
+            r = self.session.send(prepared, timeout=TIMEOUT)
             r.raise_for_status()
             self._is_online = True
             return r
         except RequestException as e:
             self._is_online = False
             raise e
+
+    def _sign_prepared_request(self, prepared: requests.PreparedRequest, path: str) -> None:
+        if not self.device_token:
+            return
+
+        body = prepared.body or b""
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+
+        timestamp = str(int(time.time()))
+        nonce = secrets.token_urlsafe(24)
+        body_hash = hashlib.sha256(body).hexdigest()
+        message = "\n".join(
+            [
+                prepared.method.upper() if prepared.method else "GET",
+                path,
+                timestamp,
+                nonce,
+                body_hash,
+            ]
+        )
+        signature = hmac.new(
+            self.device_token.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        prepared.headers["X-Request-Timestamp"] = timestamp
+        prepared.headers["X-Request-Nonce"] = nonce
+        prepared.headers["X-Request-Signature"] = signature
 
     def sync_blocklist(self):
         if not self.device_token:
@@ -315,14 +370,35 @@ class PulseDeskClient:
         if not self.device_token:
             return False
         import platform, socket
+        lat, lon = None, None
         try:
-            self._post("/api/v1/agent/heartbeat", json={
+            r_geo = self.session.get("http://ip-api.com/json", timeout=4)
+            if r_geo.status_code == 200:
+                geo_data = r_geo.json()
+                if geo_data.get("status") == "success":
+                    lat = float(geo_data.get("lat"))
+                    lon = float(geo_data.get("lon"))
+                    log.info(f"Detected client location: lat={lat}, lon={lon}")
+        except Exception:
+            pass
+
+        try:
+            resp = self._post("/api/v1/agent/heartbeat", json={
                 "device_token": self.device_token,
                 "hostname": socket.gethostname(),
                 "platform": platform.system().lower(),
                 "os_version": platform.version()[:100],
                 "agent_version": "4.0.0",
+                "latitude": lat,
+                "longitude": lon,
             })
+            data = resp.json()
+            within = data.get("within_geofence")
+            near = data.get("nearest_location_name")
+            if within is False:
+                log.warning(f"[GEOFENCE WARNING] You are currently OUTSIDE the approved geofence location: '{near or 'Unknown'}'. Please move closer to register attendance correctly.")
+            elif within is True:
+                log.info(f"[GEOFENCE OK] You are inside the approved geofence location: '{near}'")
             self.sync_blocklist()
             return True
         except RequestException:

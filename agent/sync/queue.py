@@ -8,7 +8,7 @@ import sqlite3
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 log = logging.getLogger("sync_queue")
@@ -55,7 +55,7 @@ class OfflineSyncQueue:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
                     "INSERT INTO event_queue (payload, created_at) VALUES (?, ?)",
-                    (json.dumps(payload), datetime.utcnow().isoformat()),
+                    (json.dumps(payload), datetime.now(timezone.utc).isoformat()),
                 )
                 conn.commit()
         log.debug("batch_queued_offline")
@@ -88,7 +88,7 @@ class OfflineSyncQueue:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
                     "UPDATE event_queue SET attempts = attempts + 1, last_attempt = ? WHERE id = ?",
-                    (datetime.utcnow().isoformat(), queue_id),
+                    (datetime.now(timezone.utc).isoformat(), queue_id),
                 )
                 conn.commit()
 

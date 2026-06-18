@@ -94,7 +94,7 @@ export function OverviewPage() {
           <div className="empty-state-body">
             Add employees, then enroll their devices using the join portal.
           </div>
-          <Link to="/employees" className="btn btn-primary" style={{ marginTop: 8 }}>
+          <Link to="/dashboard/employees" className="btn btn-primary" style={{ marginTop: 8 }}>
             Add employees
           </Link>
         </div>
@@ -119,7 +119,7 @@ function EmployeeCard({ employee: emp }: { employee: EmployeeStatus }) {
   const scoreColor = productivityColor(emp.today_productivity_score);
 
   return (
-    <Link to={`/analytics?employee=${emp.employee_id}`} style={{ textDecoration: "none" }}>
+    <Link to={`/dashboard/analytics?employee=${emp.employee_id}`} style={{ textDecoration: "none" }}>
       <div
         className="card"
         style={{

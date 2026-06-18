@@ -27,7 +27,7 @@ def test_login(email, password):
         )
         resp = urllib.request.urlopen(req)
         data = json.loads(resp.read())
-        print(f"[OK] Login successful")
+        print("[OK] Login successful")
         return data["access_token"]
     except Exception as e:
         body = e.read().decode() if hasattr(e, "read") else str(e)
@@ -56,12 +56,12 @@ def test_view_screenshot_no_token(screenshot_id):
     url = f"{BASE}/screenshots/view/{screenshot_id}"
     try:
         req = urllib.request.Request(url)
-        resp = urllib.request.urlopen(req)
-        print(f"  [FAIL] View without token should have returned 401 but got 200")
+        urllib.request.urlopen(req)
+        print("  [FAIL] View without token should have returned 401 but got 200")
         return False
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            print(f"  [OK] View without token correctly returns 401")
+            print("  [OK] View without token correctly returns 401")
             return True
         else:
             print(f"  [FAIL] View without token returned {e.code}")
@@ -92,7 +92,8 @@ if __name__ == "__main__":
     target_emp = None
     target_shots = []
     for emp in employees:
-        shots = api_get(f"/screenshots/{emp['id']}?limit=5", token)
+        payload = api_get(f"/screenshots/{emp['id']}?limit=5", token)
+        shots = payload.get("items", [])
         print(f"  {emp['full_name']}: {len(shots)} screenshots")
         if shots and not target_emp:
             target_emp = emp

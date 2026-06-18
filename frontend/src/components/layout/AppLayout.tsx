@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Monitor, BarChart3, AlertTriangle,
   Camera, LogOut, ChevronLeft, ChevronRight, Activity,
   Building2, Moon, Sun, MonitorPlay, FileText, ShieldOff,
-  Trophy, Settings, TrendingUp, Sparkles,
+  Trophy, Settings, TrendingUp, Sparkles, MapPin,
 } from "lucide-react";
 import { useAuthStore } from "../../store/authStore";
 import { authApi } from "../../api/client";
@@ -15,35 +15,36 @@ const NAV_GROUPS = [
   {
     label: "Monitor",
     items: [
-      { to: "/", icon: LayoutDashboard, label: "Overview" },
-      { to: "/live", icon: MonitorPlay, label: "Live screens" },
-      { to: "/graph", icon: TrendingUp, label: "Activity graph" },
+      { to: "/dashboard", icon: LayoutDashboard, label: "Overview" },
+      { to: "/dashboard/live", icon: MonitorPlay, label: "Live screens" },
+      { to: "/dashboard/graph", icon: TrendingUp, label: "Activity graph" },
     ],
   },
   {
     label: "Analytics",
     items: [
-      { to: "/analytics", icon: BarChart3, label: "Deep analytics" },
-      { to: "/leaderboard", icon: Trophy, label: "Leaderboard" },
-      { to: "/reports", icon: FileText, label: "Reports" },
-      { to: "/actions", icon: Activity, label: "Action Items" },
-      { to: "/ai-insights", icon: Sparkles, label: "AI Insights" },
+      { to: "/dashboard/analytics", icon: BarChart3, label: "Deep analytics" },
+      { to: "/dashboard/leaderboard", icon: Trophy, label: "Leaderboard" },
+      { to: "/dashboard/reports", icon: FileText, label: "Reports" },
+      { to: "/dashboard/actions", icon: Activity, label: "Action Items" },
+      { to: "/dashboard/ai-insights", icon: Sparkles, label: "AI Insights" },
     ],
   },
   {
     label: "Team",
     items: [
-      { to: "/employees", icon: Users, label: "Employees" },
-      { to: "/departments", icon: Building2, label: "Departments" },
-      { to: "/devices", icon: Monitor, label: "Devices" },
+      { to: "/dashboard/employees", icon: Users, label: "Employees" },
+      { to: "/dashboard/departments", icon: Building2, label: "Departments" },
+      { to: "/dashboard/devices", icon: Monitor, label: "Devices" },
+      { to: "/dashboard/attendance", icon: MapPin, label: "Attendance" },
     ],
   },
   {
     label: "Security",
     items: [
-      { to: "/anomalies", icon: AlertTriangle, label: "Anomalies" },
-      { to: "/blocker", icon: ShieldOff, label: "Site blocker" },
-      { to: "/screenshots", icon: Camera, label: "Screenshots" },
+      { to: "/dashboard/anomalies", icon: AlertTriangle, label: "Anomalies" },
+      { to: "/dashboard/blocker", icon: ShieldOff, label: "Site blocker" },
+      { to: "/dashboard/screenshots", icon: Camera, label: "Screenshots" },
     ],
   },
 ];
@@ -51,8 +52,20 @@ const NAV_GROUPS = [
 export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [dark, setDark] = useState(() => document.documentElement.dataset.theme === "dark");
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const { admin, logout } = useAuthStore();
   const navigate = useNavigate();
+
+  const isEmployee = admin?.role === "employee";
+  const navGroups = isEmployee ? [
+    {
+      label: "Portal",
+      items: [
+        { to: "/dashboard/employee-portal", icon: LayoutDashboard, label: "My Dashboard" },
+        { to: "/dashboard/gdpr-consent", icon: ShieldOff, label: "Privacy & GDPR" },
+      ]
+    }
+  ] : NAV_GROUPS;
 
   function toggleTheme() {
     const next = !dark;
@@ -103,7 +116,7 @@ export function AppLayout() {
 
         {/* Grouped nav */}
         <nav style={{ flex: 1, padding: "8px 0", overflowY: "auto" }}>
-          {NAV_GROUPS.map(group => (
+          {navGroups.map(group => (
             <div key={group.label} style={{ marginBottom: 2 }}>
               {!collapsed && (
                 <div style={{
@@ -115,7 +128,7 @@ export function AppLayout() {
                 </div>
               )}
               {group.items.map(({ to, icon: Icon, label }) => (
-                <NavLink key={to} to={to} end={to === "/"}
+                <NavLink key={to} to={to} end={to === "/dashboard"}
                   style={({ isActive }) => ({
                     display: "flex", alignItems: "center", gap: 8,
                     padding: collapsed ? "7px 14px" : "6px 10px",
@@ -158,7 +171,7 @@ export function AppLayout() {
             {!collapsed && (dark ? "Light mode" : "Dark mode")}
           </button>
 
-          <NavLink to="/settings" style={({ isActive }) => ({
+          <NavLink to="/dashboard/settings" style={({ isActive }) => ({
             display: "flex", alignItems: "center", gap: 8,
             padding: collapsed ? "7px 14px" : "6px 10px",
             margin: "1px 6px", borderRadius: "var(--radius-md)",
@@ -199,7 +212,7 @@ export function AppLayout() {
               )}
             </div>
             {!collapsed && (
-              <button onClick={handleLogout}
+              <button onClick={() => setShowLogoutConfirm(true)}
                 title="Sign out"
                 style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "var(--text-tertiary)", display: "flex", flexShrink: 0 }}>
                 <LogOut size={13}/>
@@ -223,6 +236,23 @@ export function AppLayout() {
           <Outlet/>
         </ErrorBoundary>
       </main>
+
+      {showLogoutConfirm && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
+          onClick={() => setShowLogoutConfirm(false)}>
+          <div className="card" style={{ width: "100%", maxWidth: 360, padding: "var(--space-6)" }} onClick={e => e.stopPropagation()}>
+            <h2 style={{ fontSize: 16, fontWeight: 600, color: "var(--text-primary)", marginBottom: 8 }}>Confirm Logout</h2>
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 }}>
+              Are you sure you want to sign out of PulseDesk?
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn btn-ghost" onClick={() => setShowLogoutConfirm(false)}>Cancel</button>
+              <button className="btn btn-danger" onClick={() => { setShowLogoutConfirm(false); handleLogout(); }}>Logout</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
