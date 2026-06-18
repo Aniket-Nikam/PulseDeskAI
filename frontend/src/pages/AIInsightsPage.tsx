@@ -108,26 +108,79 @@ function trendLabel(trend: "up" | "down" | "stable") {
 
 // Simple markdown→HTML for bold/bullets
 function renderMarkdown(text: string) {
+  if (!text) return null;
   const lines = text.split("\n");
   return lines.map((line, i) => {
+    const trimmedLine = line.trim();
+    if (trimmedLine === "") return <div key={i} style={{ height: 8 }} />;
+
+    let isHeader = false;
+    let headerLevel = 0;
+    let content = trimmedLine;
+
+    if (trimmedLine.startsWith("### ")) {
+      isHeader = true; headerLevel = 3; content = trimmedLine.slice(4);
+    } else if (trimmedLine.startsWith("## ")) {
+      isHeader = true; headerLevel = 2; content = trimmedLine.slice(3);
+    } else if (trimmedLine.startsWith("# ")) {
+      isHeader = true; headerLevel = 1; content = trimmedLine.slice(2);
+    }
+
+    let isBullet = false;
+    let isNumbered = false;
+    let bulletPrefix = "";
+    
+    if (!isHeader) {
+      if (trimmedLine.startsWith("- ") || trimmedLine.startsWith("• ") || trimmedLine.startsWith("* ")) {
+        isBullet = true;
+        content = trimmedLine.slice(2);
+      } else {
+        const match = trimmedLine.match(/^(\d+\.)\s+(.*)/);
+        if (match) {
+          isNumbered = true;
+          bulletPrefix = match[1];
+          content = match[2];
+        }
+      }
+    }
+
     // Bold **text**
-    const parts = line.split(/(\*\*[^*]+\*\*)/g);
+    const parts = content.split(/(\*\*[^*]+\*\*)/g);
     const rendered = parts.map((p, j) =>
       p.startsWith("**") && p.endsWith("**")
         ? <strong key={j}>{p.slice(2, -2)}</strong>
         : p
     );
-    // Bullet points
-    if (line.startsWith("- ") || line.startsWith("• ")) {
+
+    if (isHeader) {
+      const fontSize = headerLevel === 1 ? 16 : headerLevel === 2 ? 15 : 14;
+      const margin = headerLevel === 1 ? "16px 0 8px 0" : "12px 0 6px 0";
       return (
-        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 2 }}>
-          <span style={{ color: "var(--accent)", marginTop: 1 }}>•</span>
-          <span>{rendered.slice(1)}</span>
+        <div key={i} style={{ fontWeight: 600, color: "var(--text-primary)", fontSize, margin }}>
+          {rendered}
         </div>
       );
     }
-    if (line === "") return <div key={i} style={{ height: 8 }} />;
-    return <div key={i}>{rendered}</div>;
+
+    if (isBullet) {
+      return (
+        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+          <span style={{ color: "var(--accent)", marginTop: 1 }}>•</span>
+          <span>{rendered}</span>
+        </div>
+      );
+    }
+
+    if (isNumbered) {
+      return (
+        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+          <span style={{ color: "var(--text-tertiary)", marginTop: 1, fontWeight: 500 }}>{bulletPrefix}</span>
+          <span>{rendered}</span>
+        </div>
+      );
+    }
+
+    return <div key={i} style={{ marginBottom: 4, lineHeight: 1.6 }}>{rendered}</div>;
   });
 }
 
