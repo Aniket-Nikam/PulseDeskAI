@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -11,10 +11,17 @@ backend/venv/
 *.pyo
 .Python
 
-# Environment secrets
+# Environment secrets — catch ALL .env files at any depth
 .env
-backend/.env
-agent/.env
+**/.env
+**/.env.local
+**/.env.*.local
+
+# Scratch / debug scripts (should never be committed)
+backend/scratch_*.py
+backend/stderr.log
+backend/stdout.log
+python_path.txt
 
 # Database & local storage
 *.db
