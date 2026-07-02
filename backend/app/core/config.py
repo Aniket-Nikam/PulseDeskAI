@@ -12,7 +12,7 @@ _env_file_path = os.path.join(_backend_dir, ".env")
 
 class Settings(BaseSettings):
     APP_NAME: str = "PulseDesk"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "5.0.0"
     DEBUG: bool = False
     ALLOW_ADMIN_CLI_RESET: bool = False
 

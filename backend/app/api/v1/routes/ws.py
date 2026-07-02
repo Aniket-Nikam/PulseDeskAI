@@ -31,7 +31,6 @@ async def live_feed(websocket: WebSocket, token: str | None = Query(default=None
       - ?token=<access_token> (legacy fallback)
     Receives JSON pushes: { "type": "employee_update", "data": {...} }
     """
-    await websocket.accept()
     
     origin = (websocket.headers.get("origin") or "").rstrip("/")
     if origin and origin not in _allowed_ws_origins() and not is_private_or_local_origin(origin):
@@ -64,6 +63,7 @@ async def live_feed(websocket: WebSocket, token: str | None = Query(default=None
         await websocket.close(code=4001)
         return
 
+    await websocket.accept()
     await manager.connect(websocket)
     admin_id = payload.get("sub", "unknown")
     log.info("ws_admin_connected", admin_id=admin_id)
@@ -89,8 +89,6 @@ async def screen_stream(websocket: WebSocket, device_token: str | None = Query(d
     Agent connects here to stream screen frames.
     Requires X-Device-Token header. Query token is accepted only for older agents.
     """
-    await websocket.accept()
-    log.info("ws_agent_stream_accepted", client=str(websocket.client))
     if not device_token:
         device_token = websocket.headers.get("x-device-token")
     if not device_token:
@@ -116,6 +114,8 @@ async def screen_stream(websocket: WebSocket, device_token: str | None = Query(d
             return
         employee_id = str(device.employee_id)
 
+    await websocket.accept()
+    log.info("ws_agent_stream_accepted", client=str(websocket.client))
     await stream_manager.register_agent(employee_id, websocket)
     log.info("ws_agent_stream_connected", employee_id=employee_id, device_id=str(device.id))
 
@@ -154,7 +154,6 @@ async def screen_view(
     Admins connect here to view real-time screen stream for an employee.
     Requires admin authentication.
     """
-    await websocket.accept()
     origin = (websocket.headers.get("origin") or "").rstrip("/")
     if origin and origin not in _allowed_ws_origins() and not is_private_or_local_origin(origin):
         log.warning("ws_admin_viewer_rejected: origin not allowed", origin=origin)
@@ -211,6 +210,7 @@ async def screen_view(
         await websocket.close(code=4001)
         return
     
+    await websocket.accept()
     await stream_manager.register_admin(employee_id, websocket)
     admin_id = payload.get("sub", "unknown")
     log.info("ws_admin_viewer_connected", employee_id=employee_id, admin_id=admin_id)

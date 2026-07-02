@@ -36,7 +36,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("agent")
 
-AGENT_VERSION = "4.0.0"
+AGENT_VERSION = "5.0.0"
 
 
 def handle_join_url(join_url: str, queue: OfflineSyncQueue) -> bool:

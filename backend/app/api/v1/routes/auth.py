@@ -264,12 +264,17 @@ async def signup(
 
     _validate_password_strength(payload.password)
 
+    # First user becomes super_admin, subsequent users become admin
+    any_admin = await db.execute(select(Admin).limit(1))
+    is_first_admin = any_admin.scalar_one_or_none() is None
+    assigned_role = UserRole.super_admin if is_first_admin else UserRole.admin
+
     admin = Admin(
         email=email,
         hashed_password=hash_password(payload.password),
         full_name=payload.full_name,
         business_name=payload.business_name,
-        role=UserRole.super_admin,
+        role=assigned_role,
         is_active=True,
     )
     db.add(admin)

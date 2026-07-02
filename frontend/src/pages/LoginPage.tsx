@@ -110,7 +110,7 @@ export function LoginPage() {
 
         {/* Footer */}
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.45)" }}>
-          PulseDesk — Employee Monitoring System v3.0
+          PulseDesk — Employee Monitoring System v5.0.0
         </div>
       </div>
 

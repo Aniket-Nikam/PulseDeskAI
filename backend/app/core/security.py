@@ -151,7 +151,7 @@ def is_private_or_local_origin(origin: str) -> bool:
             return True
         
         # Check common developer tunnel hostnames
-        if (
+        if settings.ALLOW_INSECURE_DEFAULTS and (
             hostname.endswith(".localtunnel.me")
             or hostname.endswith(".ngrok.io")
             or hostname.endswith(".ngrok-free.app")
